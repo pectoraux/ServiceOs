@@ -2,7 +2,6 @@
   "schemaVersion": 1,
   "status": "approved",
   "sequence": [
-    "WORK-001",
     "WORK-002",
     "WORK-003",
     "WORK-014",
@@ -19,40 +18,15 @@
     "WORK-013"
   ],
   "parallelWaves": [
-    [
-      "WORK-001"
-    ],
-    [
-      "WORK-002",
-      "WORK-003",
-      "WORK-011"
-    ],
-    [
-      "WORK-014"
-    ],
-    [
-      "WORK-004"
-    ],
-    [
-      "WORK-015"
-    ],
-    [
-      "WORK-005",
-      "WORK-007",
-      "WORK-008",
-      "WORK-009"
-    ],
-    [
-      "WORK-006"
-    ],
-    [
-      "WORK-010",
-      "WORK-012"
-    ],
-    [
-      "WORK-013"
-    ]
+    ["WORK-002","WORK-003","WORK-011"],
+    ["WORK-014"],
+    ["WORK-004"],
+    ["WORK-015"],
+    ["WORK-005","WORK-007","WORK-008","WORK-009"],
+    ["WORK-006"],
+    ["WORK-010","WORK-012"],
+    ["WORK-013"]
   ],
   "selectionRule": "Only dependency-eligible Work Orders with no uncoordinated protected-surface conflict may be activated.",
-  "rationale": "Wave ordering is dependency-safe; parallel waves are illustrative eligibility groupings, not automatic activation grants. WORK-014 and WORK-015 establish the policy and external-side-effect authorities before consumer work is activated."
+  "rationale": "WORK-001 is complete and removed from the future generation. WORK-014 and WORK-015 remain positioned before their downstream consumers. Parallel waves describe eligibility only; Architect activation is still required."
 }
