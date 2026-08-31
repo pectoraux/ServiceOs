@@ -1,6 +1,6 @@
 # WORK-001
 
-Status: in_flight
+Status: complete
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: HIGH_ASSURANCE
@@ -90,7 +90,7 @@ Activated by Architect on 2026-08-31.
 
 ## Implementation Evidence (Z.ai delivery record)
 
-Implementation revision: `d94d3c7` (implementation), plus evidence/CI-fix commits `c13688d`, `3f3f43e`, `5153146` on `feat/WORK-001-foundation`; PR head at delivery: `5153146`.
+Implementation revision: `d94d3c7` (implementation), plus evidence/CI-fix commits `c13688d`, `3f3f43e`, `5153146` on `feat/WORK-001-foundation`; final PR delivery head before merge: `a994f24d909c6db7e0d876553e4329a071fa36b7`.
 Delivery date: 2026-08-31. PR: #15 (https://github.com/pectoraux/ServiceOs/pull/15).
 
 ### Changed surfaces (allowed scope only)
@@ -102,33 +102,54 @@ Delivery date: 2026-08-31. PR: #15 (https://github.com/pectoraux/ServiceOs/pull/
 - `README.md` — development entrypoint section only (authority text untouched)
 - `.github/workflows/governance.yml` — fixed broken YAML (`branches: ain]` typo) and wired the full check/test suite into CI
 - `package.json`, `package-lock.json`, `tsconfig.json`, `.env.example` — toolchain
-- `spec/work-orders/WORK-001.md` — this evidence section only
+- `spec/work-orders/WORK-001.md` — evidence/finalization record only
 
-Untouched by design: `spec/architecture/**`, `spec/governance/**`, `spec/development-state/**`, other Work Orders, `AGENTS.md` (Architect authority preserved).
+Untouched by design: `spec/architecture/**`, `spec/governance/**` (except persistent state needed for activation/finalization), other Work Orders, `AGENTS.md` (Architect authority preserved).
 
-### Checks run and results
+### Checks and verification
 
-- `npm run build` — PASS (tsc, strict, 46 source/test files)
-- `npm run check` — PASS (build + config validation + architecture structural checks + governance frontier/Work Order validation + `scripts/governance-check.py`)
-- `npm test` — PASS: 118 tests, 116 pass, 0 fail, 2 skipped (gated live-PostgreSQL integration tests; no PostgreSQL available in the implementation environment)
-- Server smoke (unreachable database): `/healthz` 200, `/api/_meta` 200 (16 modules), `/readyz` 503 with truthful reason, 404/405/500 JSON errors, fail-closed startup without `SERVICEOS_DATABASE_URL` (exit 1)
+- `npm run build` — PASS (strict TypeScript compile)
+- `npm run check` — PASS (build + config validation + architecture structural checks + governance validation + repository checker)
+- `npm test` — PASS: 118 tests, 116 pass, 0 fail, 2 skipped (gated live-PostgreSQL tests)
+- Server smoke — PASS: `/healthz` 200, `/api/_meta` 200, truthful `/readyz` 503 when DB unreachable, JSON 404/405/500, fail-closed startup without DSN
+- GitHub CI on PR #15 head `a994f24` — `ServiceOS Governance` run #23 completed successfully.
 
 ### Acceptance criteria evidence
 
-- AC-1 Repository builds and tests through the documented entrypoint — `npm run check` / `npm test` documented in `docs/DEVELOPMENT.md`, executed green at the implementation revision; wired into CI.
-- AC-2 Modular boundary structure matches the architecture — structural check parses the module table from `spec/architecture/v1.0/architecture.md` §6 and asserts the `src/modules` tree equals it; dynamic test asserts the composed module registry matches the same parsed list (16/16).
-- AC-3 No AI provider/model/agent code exists in ServiceOS — structural check rejects AI/LLM SDK imports (including any Zeck SDK), AI-infrastructure path segments, and non-allowlisted package dependencies; the real tree passes with zero violations; `package.json` contains only `pg` (runtime) + toolchain devDependencies.
-- AC-4 Governance validation identifies the current frontier and Work Order identity — `npm run check` reports `currentLiveImplementation=WORK-001`, in-flight branch `feat/WORK-001-foundation`, assurance profile, and validates branch conformance; dynamic tests prove the reader returns WORK-001 from the real repository state and fails closed on tampered state fixtures.
+- AC-1 — development and proof entrypoints are documented and passed locally/CI.
+- AC-2 — module tree is parsed from the authoritative architecture document and matched by structural and module-registry tests (16/16).
+- AC-3 — forbidden AI/Zeck SDK imports, AI infrastructure paths and non-allowlisted dependencies are structurally rejected; real tree passes.
+- AC-4 — governance reader identifies WORK-001 and its branch from canonical repository state; mutation fixtures fail closed.
 
-### Proof classes (HIGH_ASSURANCE)
+### Proof classes
 
-- static/structural — module tree conformance, dependency direction, forbidden AI surfaces absent, dependency policy (all asserted against the real tree by `npm run check` and by tests).
-- dynamic/behavioral — build/test startup, configuration validation (aggregated fail-closed ConfigError classes), server composition (health/ready/meta, 404/405/500, truthful readiness), transaction and migration semantics via injected executors.
-- discrimination/mutation — synthetic trees containing a known forbidden AI import (openai, @anthropic-ai/sdk, @langchain/core, @pectoraux/zeck, zeck, ai), deep cross-module internal imports, platform→module imports, module imports outside the composition root, `pg` outside the persistence boundary, raw `node:http` outside the platform HTTP composition, unknown dependencies, AI path segments, unresolved imports, and tampered governance state are each rejected with the matching violation code; clean control trees produce zero violations (the checks are not vacuous).
+- static/structural — module-tree conformance, dependency direction, forbidden AI surfaces, package dependency policy, persistence/HTTP boundary enforcement.
+- dynamic/behavioral — configuration, logging, server composition/readiness, transaction and migration semantics, governance state reading.
+- discrimination/mutation — synthetic violating source trees and tampered governance states are rejected with stable violation/error codes; clean controls pass.
 
 ### Known limitations
 
-- The implementation environment had no PostgreSQL instance: the gated live-database integration tests (`test/persistence.integration.test.ts`, activated by `SERVICEOS_TEST_DATABASE_URL`) were not executed locally and are available for CI/Architect verification.
-- No durable business schema ships in this Work Order (owned by WORK-002/003+); the migration runner is proven with scripted executors.
-- The base HTTP layer is intentionally minimal (Node built-ins, GET-only platform routes); the control-plane API surface is owned by WORK-012.
-- Concurrency/crash proofs are out of scope per this Work Order's verification requirements (no shared durable initialization is performed by the runtime).
+- No PostgreSQL instance existed in the implementation environment, so the two live-database integration tests were gated/skipped locally. They remain available for an environment with `SERVICEOS_TEST_DATABASE_URL`.
+- No business schema is part of this foundation; durable business state belongs to later Work Orders.
+- Control-plane API surface remains deliberately minimal; WORK-012 owns the larger API.
+
+## Architect Verification
+
+Architect verification: **APPROVED**
+
+Verification basis:
+- PR #15 inspected against the frozen v1.0 architecture and WORK-001 scope.
+- AI authority boundary preserved; no second AI/persistence/workflow authority introduced.
+- Structural and discrimination proofs are substantive and non-vacuous.
+- PR head CI run #23 passed.
+- No unresolved review threads or PR comments requiring remediation were present.
+- Merge completed by Architect with merge commit `8bf0336b25eaebed416eacb7236233149885d181`.
+
+## Post-Merge Finalization
+
+- Finalized by Architect on 2026-08-31.
+- Merged PR: `#15`
+- Merge commit: `8bf0336b25eaebed416eacb7236233149885d181`
+- Status transitioned: `in_flight -> complete`
+- Future-generation membership removed.
+- Next frontier recomputed to dependency-eligible Work Orders.
