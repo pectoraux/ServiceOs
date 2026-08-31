@@ -3,13 +3,30 @@
   "schemaVersion": 1,
   "architectureVersion": "v1.0",
   "asOf": "2026-08-31",
-  "status": "ready",
-  "workOrders": [],
+  "status": "in_progress",
+  "workOrders": [
+    {
+      "id": "WORK-001",
+      "title": "ServiceOS Foundation",
+      "status": "in_flight",
+      "dependencies": [],
+      "branch": "feat/WORK-001-foundation",
+      "pr": null,
+      "implementationRevision": null,
+      "currentMainRevision": "9b577575dee0e257112405d4f3a4f874cb9de0d4",
+      "activationIssue": 1,
+      "assuranceProfile": "HIGH_ASSURANCE",
+      "surfaceFlags": ["documentation","localBehavior","moduleInternals","multiModule","publicContracts","schema","authorityBoundary","securityTenant"],
+      "surfaces": ["platform","repository governance","persistence bootstrap","API composition"],
+      "coordination": null,
+      "mergedAs": null
+    }
+  ],
   "decisions": [
     {"id":"ADR-0001","summary":"ServiceOS delegates all AI execution to Zeck."}
   ],
   "resumption": {
-    "activeHandoffs": [],
+    "activeHandoffs": ["WORK-001"],
     "rule":"A fresh Architect reads repository state before selecting work."
   }
 }
