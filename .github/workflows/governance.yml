@@ -10,29 +10,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validate governance JSON
-        run: |
-          python3 - <<'PY'
-          import json, pathlib, sys
-          root = pathlib.Path('.')
-          for p in root.glob('spec/**/*.json'):
-              json.loads(p.read_text())
-          dep = json.loads(pathlib.Path('spec/development-state/dependency-state.json').read_text())
-          road = json.loads(pathlib.Path('spec/governance/future-roadmap.json').read_text())
-          ids = list(dep['futureGeneration'].keys())
-          assert ids == road['sequence'], 'futureGeneration must equal roadmap.sequence in exact order'
-          work_ids = [p.stem for p in pathlib.Path('spec/work-orders').glob('WORK-*.md')]
-          assert len(work_ids) == len(set(work_ids)), 'duplicate Work Order identity'
-          assert set(ids) == set(work_ids), 'futureGeneration and Work Order files diverge'
-          print('ServiceOS governance JSON + Work Order identity: PASS')
-          PY
-      - name: Validate AI authority boundary
-        run: |
-          ! grep -R "from ['\"]@.*\(openai\|anthropic\|google\|groq\)" backend 2>/dev/null || true
-          python3 - <<'PY'
-          from pathlib import Path
-          forbidden = ["/models", "/planning", "/agent-runtime", "/ai-provider"]
-          arch = Path('spec/architecture/v1.0/architecture.md').read_text()
-          assert 'Zeck is the sole AI execution authority' in arch or 'Zeck is the sole AI execution authority' in Path('spec/architecture/v1.0/architecture-lock.md').read_text()
-          print('ServiceOS AI authority declaration: PASS')
-          PY
+      - name: Validate repository governance
+        run: python3 scripts/governance-check.py
