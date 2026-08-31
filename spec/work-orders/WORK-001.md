@@ -90,7 +90,7 @@ Activated by Architect on 2026-08-31.
 
 ## Implementation Evidence (Z.ai delivery record)
 
-Implementation revision: `d94d3c7` (+ evidence commits on `feat/WORK-001-foundation`).
+Implementation revision: `d94d3c7` (implementation), plus evidence/CI-fix commits `c13688d`, `3f3f43e`, `5153146` on `feat/WORK-001-foundation`; PR head at delivery: `5153146`.
 Delivery date: 2026-08-31. PR: #15 (https://github.com/pectoraux/ServiceOs/pull/15).
 
 ### Changed surfaces (allowed scope only)
