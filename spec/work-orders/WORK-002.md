@@ -133,6 +133,14 @@ persistence boundary now pins transactions to one acquired client
 it — preserving the documented WORK-001 semantics (guarded, idempotent
 migration batch) under real concurrency.
 
+Empirical confirmation: WORK-001's gated migration proof, which had never
+executed anywhere (no PostgreSQL service existed in CI before WORK-002),
+failed on its first live run with `42P01 relation … does not exist` when
+driving `applyMigrations` through a raw pool — the seed INSERT ran in a
+session that could not see the CREATE TABLE. The proof now drives the
+production path (the boundary's client-pinned `migrate`) and a second proof
+pins a client by hand; all live proofs pass.
+
 ### Checks and verification
 
 - `npm run build` — PASS (strict TypeScript compile).
@@ -140,9 +148,11 @@ migration batch) under real concurrency.
   conformance (16 modules), identity/tenancy boundary checks (one
   authorization chain, one identity engine, one guard factory), governance
   frontier (WORK-002 in flight on this branch), branch conformance.
-- `npm test` — PASS: 199 tests, 192 pass, 0 fail, 7 skipped (the gated
-  live-PostgreSQL integrations — 2 from WORK-001, 5 from WORK-002 — which
-  execute in CI through the provisioned PostgreSQL service).
+- `npm test` — PASS: 200 tests, 192 pass, 0 fail, 8 skipped locally (the
+  gated live-PostgreSQL integrations — which execute in CI through the
+  provisioned PostgreSQL service; the first live CI run confirmed all five
+  WORK-002 live proofs pass against real PostgreSQL, including true
+  parallel-client convergence and FOR UPDATE last-owner serialization).
 - Server smoke — PASS: `/healthz` 200 without DB, `/readyz` 503 (truthful,
   unreachable DB), `/api/_meta` 200, customer routes answer 401 before any
   data access even with the database down, register fails closed (500, no
@@ -235,7 +245,7 @@ the pre-existing roadmap inconsistency, reported above), other Work Orders,
 
 ### Known limitations
 
-- No local PostgreSQL in the implementation environment: the 7 gated live
+- No local PostgreSQL in the implementation environment: the 8 gated live
   integrations were skipped locally and execute in CI (provisioned
   PostgreSQL service). Everything not requiring a live database is proven
   locally through faithful store doubles that implement the same ports.

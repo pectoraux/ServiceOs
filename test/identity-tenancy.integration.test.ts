@@ -25,6 +25,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import pg from 'pg';
 import { applyMigrations, withTransactionOn, type Migration, type TransactionalExecutor } from '../src/platform/persistence/index.js';
+import type { MigrationReport } from '../src/platform/persistence/migrations.js';
 import { createAuthModule } from '../src/modules/auth/index.js';
 import { createOrganizationsModule, OrganizationsError } from '../src/modules/organizations/index.js';
 
@@ -48,6 +49,20 @@ function poolExecutor(pool: pg.Pool): TransactionalExecutor {
       })();
     },
   };
+}
+
+/**
+ * Apply migrations through a client-pinned executor: a raw pg.Pool is NOT a
+ * valid pinned executor (per-statement client checkout — see the WORK-002
+ * evidence for the defect this avoids).
+ */
+async function applyMigrationsPinned(pool: pg.Pool, migrations: readonly Migration[]): Promise<MigrationReport> {
+  const client = await pool.connect();
+  try {
+    return await applyMigrations(client, migrations);
+  } finally {
+    client.release();
+  }
 }
 
 function migration(): Migration {
@@ -83,9 +98,9 @@ async function withPool(handler: (pool: pg.Pool) => Promise<void>): Promise<void
 
 test('live: migration 0001 applies once and re-runs are no-ops', { skip: DATABASE_URL === undefined }, async () => {
   await withPool(async (pool) => {
-    const first = await applyMigrations(pool, [migration()]);
+    const first = await applyMigrationsPinned(pool, [migration()]);
     assert.equal(first.applied.length + first.skipped, 1);
-    const second = await applyMigrations(pool, [migration()]);
+    const second = await applyMigrationsPinned(pool, [migration()]);
     assert.equal(second.applied.length, 0);
     assert.equal(second.skipped, 1);
   });
@@ -93,7 +108,7 @@ test('live: migration 0001 applies once and re-runs are no-ops', { skip: DATABAS
 
 test('live: full identity/tenancy lifecycle over real SQL', { skip: DATABASE_URL === undefined }, async () => {
   await withPool(async (pool) => {
-    await applyMigrations(pool, [migration()]);
+    await applyMigrationsPinned(pool, [migration()]);
     await resetDatabase(pool);
     const { auth, organizations } = buildModules(pool);
 
@@ -134,7 +149,7 @@ test('live: full identity/tenancy lifecycle over real SQL', { skip: DATABASE_URL
 
 test('live: tenant directories are isolated at the SQL level (cross-tenant rows invisible)', { skip: DATABASE_URL === undefined }, async () => {
   await withPool(async (pool) => {
-    await applyMigrations(pool, [migration()]);
+    await applyMigrationsPinned(pool, [migration()]);
     await resetDatabase(pool);
     const { auth, organizations } = buildModules(pool);
 
@@ -153,7 +168,7 @@ test('live: tenant directories are isolated at the SQL level (cross-tenant rows 
 
 test('live: truly parallel inserts converge on one durable identity (unique constraints arbitrate)', { skip: DATABASE_URL === undefined }, async () => {
   await withPool(async (pool) => {
-    await applyMigrations(pool, [migration()]);
+    await applyMigrationsPinned(pool, [migration()]);
     await resetDatabase(pool);
 
     // Two independent connections insert the same organization slug at the
@@ -201,7 +216,7 @@ test('live: truly parallel inserts converge on one durable identity (unique cons
 
 test('live: parallel last-owner revocations serialize through FOR UPDATE and preserve the rule', { skip: DATABASE_URL === undefined }, async () => {
   await withPool(async (pool) => {
-    await applyMigrations(pool, [migration()]);
+    await applyMigrationsPinned(pool, [migration()]);
     await resetDatabase(pool);
     const { auth, organizations } = buildModules(pool);
 
