@@ -15,6 +15,11 @@
  * - concurrent last-owner revocations serialize through FOR UPDATE and the
  *   last-active-owner rule holds.
  *
+ * Each proof runs against its OWN disposable database (node:test executes
+ * test files concurrently and migration history is global per database, so
+ * sharing one would make unrelated migration sets collide through the
+ * version-history check).
+ *
  * This environment has no local PostgreSQL, so these proofs execute in CI
  * (the governance workflow provisions a PostgreSQL service) — see the
  * Work Order evidence record.
@@ -28,8 +33,9 @@ import { applyMigrations, withTransactionOn, type Migration, type TransactionalE
 import type { MigrationReport } from '../src/platform/persistence/migrations.js';
 import { createAuthModule } from '../src/modules/auth/index.js';
 import { createOrganizationsModule, OrganizationsError } from '../src/modules/organizations/index.js';
+import { createLiveTestDatabase, liveDatabaseRequested, type LiveDatabase } from './helpers/live-database.js';
 
-const DATABASE_URL = process.env.SERVICEOS_TEST_DATABASE_URL;
+const SKIP = !liveDatabaseRequested();
 const PASSWORD = 'correct horse battery 7';
 
 /** Wrap a pg pool as the transaction-capable executor modules consume. */
@@ -70,13 +76,11 @@ function migration(): Migration {
   return { version: 1, name: 'identity-tenancy', sql };
 }
 
-async function resetDatabase(pool: pg.Pool): Promise<void> {
-  await pool.query(
-    `TRUNCATE org_memberships, org_service_tenants, org_organizations, auth_sessions, auth_api_keys, auth_users CASCADE`,
-  );
-}
-
-function buildModules(pool: pg.Pool) {
+/** Fresh pool + modules over a disposable database with migration 0001 applied. */
+async function preparedLive(): Promise<{ live: LiveDatabase; pool: pg.Pool; auth: ReturnType<typeof createAuthModule>; organizations: ReturnType<typeof createOrganizationsModule> }> {
+  const live = await createLiveTestDatabase();
+  const pool = new pg.Pool({ connectionString: live.dsn, max: 8 });
+  await applyMigrationsPinned(pool, [migration()]);
   const executor = poolExecutor(pool);
   const auth = createAuthModule({ executor });
   const organizations = createOrganizationsModule({
@@ -84,34 +88,35 @@ function buildModules(pool: pg.Pool) {
     authenticator: auth.authenticate,
     identity: auth,
   });
-  return { auth, organizations };
+  return { live, pool, auth, organizations };
 }
 
-async function withPool(handler: (pool: pg.Pool) => Promise<void>): Promise<void> {
-  const pool = new pg.Pool({ connectionString: DATABASE_URL as string, max: 8 });
+test('live: migration 0001 applies once and re-runs are no-ops', { skip: SKIP }, async () => {
+  const live = await createLiveTestDatabase();
+  const pool = new pg.Pool({ connectionString: live.dsn });
   try {
-    await handler(pool);
-  } finally {
-    await pool.end();
-  }
-}
-
-test('live: migration 0001 applies once and re-runs are no-ops', { skip: DATABASE_URL === undefined }, async () => {
-  await withPool(async (pool) => {
     const first = await applyMigrationsPinned(pool, [migration()]);
     assert.equal(first.applied.length + first.skipped, 1);
     const second = await applyMigrationsPinned(pool, [migration()]);
     assert.equal(second.applied.length, 0);
     assert.equal(second.skipped, 1);
-  });
+    // The durable identity/tenancy tables exist.
+    const tables = await pool.query(
+      `SELECT table_name FROM information_schema.tables
+       WHERE table_schema = 'public'
+         AND table_name IN ('auth_users','auth_sessions','auth_api_keys','org_organizations','org_service_tenants','org_memberships')
+       ORDER BY table_name`,
+    );
+    assert.equal(tables.rows.length, 6);
+  } finally {
+    await pool.end();
+    await live.drop();
+  }
 });
 
-test('live: full identity/tenancy lifecycle over real SQL', { skip: DATABASE_URL === undefined }, async () => {
-  await withPool(async (pool) => {
-    await applyMigrationsPinned(pool, [migration()]);
-    await resetDatabase(pool);
-    const { auth, organizations } = buildModules(pool);
-
+test('live: full identity/tenancy lifecycle over real SQL', { skip: SKIP }, async () => {
+  const { live, pool, auth, organizations } = await preparedLive();
+  try {
     const owner = await auth.registerHuman({
       email: 'alice@example.com',
       password: PASSWORD,
@@ -144,33 +149,33 @@ test('live: full identity/tenancy lifecycle over real SQL', { skip: DATABASE_URL
     assert.equal(decision.allowed, false, 'machine viewer cannot write (AC-5)');
     const read = await organizations.authorize(machine.id, { tenantId: created.tenant.id }, 'read');
     assert.equal(read.allowed, true);
-  });
+  } finally {
+    await pool.end();
+    await live.drop();
+  }
 });
 
-test('live: tenant directories are isolated at the SQL level (cross-tenant rows invisible)', { skip: DATABASE_URL === undefined }, async () => {
-  await withPool(async (pool) => {
-    await applyMigrationsPinned(pool, [migration()]);
-    await resetDatabase(pool);
-    const { auth, organizations } = buildModules(pool);
-
+test('live: tenant directories are isolated at the SQL level (cross-tenant rows invisible)', { skip: SKIP }, async () => {
+  const { live, pool, auth, organizations } = await preparedLive();
+  try {
     const alice = await auth.registerHuman({ email: 'alice@example.com', password: PASSWORD, displayName: 'Alice' });
     const carol = await auth.registerHuman({ email: 'carol@example.com', password: PASSWORD, displayName: 'Carol' });
-    const orgA = await organizations.createOrganization(alice, { slug: 'alpha-org', displayName: 'Alpha' });
+    await organizations.createOrganization(alice, { slug: 'alpha-org', displayName: 'Alpha' });
     await organizations.createOrganization(carol, { slug: 'beta-org', displayName: 'Beta' });
 
     const directory = await organizations.listTenantMembers(alice, 'alpha-org-default');
     const principalIds = directory.map((member) => member.principal.id);
     assert.ok(principalIds.includes(alice.id));
     assert.ok(!principalIds.includes(carol.id), 'tenant A directory must never include tenant B members');
-    void orgA;
-  });
+  } finally {
+    await pool.end();
+    await live.drop();
+  }
 });
 
-test('live: truly parallel inserts converge on one durable identity (unique constraints arbitrate)', { skip: DATABASE_URL === undefined }, async () => {
-  await withPool(async (pool) => {
-    await applyMigrationsPinned(pool, [migration()]);
-    await resetDatabase(pool);
-
+test('live: truly parallel inserts converge on one durable identity (unique constraints arbitrate)', { skip: SKIP }, async () => {
+  const { live, pool, auth, organizations } = await preparedLive();
+  try {
     // Two independent connections insert the same organization slug at the
     // same time: the unique constraint must admit exactly one.
     const clientA = await pool.connect();
@@ -198,7 +203,6 @@ test('live: truly parallel inserts converge on one durable identity (unique cons
 
     // Module-level: parallel organization creation converges on one
     // organization with a typed conflict for the loser.
-    const { auth, organizations } = buildModules(pool);
     const owner = await auth.registerHuman({ email: 'owner@example.com', password: PASSWORD, displayName: 'Owner' });
     const attempts = await Promise.allSettled([
       organizations.createOrganization(owner, { slug: 'raced-org-2', displayName: 'One' }),
@@ -211,15 +215,15 @@ test('live: truly parallel inserts converge on one durable identity (unique cons
     assert.equal(reason.code, 'ORG_SLUG_TAKEN');
     const rows = await pool.query(`SELECT COUNT(*)::int AS count FROM org_organizations WHERE slug = 'raced-org-2'`);
     assert.equal((rows.rows[0] as { count: number }).count, 1);
-  });
+  } finally {
+    await pool.end();
+    await live.drop();
+  }
 });
 
-test('live: parallel last-owner revocations serialize through FOR UPDATE and preserve the rule', { skip: DATABASE_URL === undefined }, async () => {
-  await withPool(async (pool) => {
-    await applyMigrationsPinned(pool, [migration()]);
-    await resetDatabase(pool);
-    const { auth, organizations } = buildModules(pool);
-
+test('live: parallel last-owner revocations serialize through FOR UPDATE and preserve the rule', { skip: SKIP }, async () => {
+  const { live, pool, auth, organizations } = await preparedLive();
+  try {
     const owner1 = await auth.registerHuman({ email: 'o1@example.com', password: PASSWORD, displayName: 'O1' });
     const owner2 = await auth.registerHuman({ email: 'o2@example.com', password: PASSWORD, displayName: 'O2' });
     const created = await organizations.createOrganization(owner1, { slug: 'acme', displayName: 'ACME' });
@@ -240,5 +244,8 @@ test('live: parallel last-owner revocations serialize through FOR UPDATE and pre
       [created.organization.id],
     );
     assert.equal((owners.rows[0] as { count: number }).count, 1, 'the organization retains an active owner');
-  });
+  } finally {
+    await pool.end();
+    await live.drop();
+  }
 });
