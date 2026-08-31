@@ -62,6 +62,18 @@ Construction, starting with subcontractor/vendor compliance and expanding toward
 
 Read `AGENTS.md`, `docs/IMPLEMENTATION-RUNBOOK.md`, `docs/IMPLEMENTATION-HANDOFF.md`, and the **activated** Work Order. Do not infer scope from chat. Stop and return control to the Architect if implementation requires an unplanned authority, frozen-architecture change, unplanned protected surface, incomplete dependency, or AI capability that belongs in Zeck.
 
+## Development entrypoint
+
+The runtime foundation (TypeScript modular monolith, PostgreSQL persistence boundary, test harness, governance wiring and base server composition) builds and proves itself through one command:
+
+```bash
+npm install
+npm run check   # build + config validation + architecture structural checks + governance validation
+npm test        # behavioral + structural + discrimination proofs
+```
+
+See `docs/DEVELOPMENT.md` for the full operational reference (configuration, module layout, enforced boundaries, migrations).
+
 ## Program status
 
 Architecture v1.0 is frozen for implementation. The repository begins with 15 planned Work Orders and no activated runtime implementation. `WORK-001` is the initial dependency-eligible frontier head. Program state evolves in `spec/development-state/`; the governance checker is designed for both bootstrap and post-activation states.

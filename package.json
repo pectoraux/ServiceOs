@@ -1,0 +1,26 @@
+{
+  "name": "serviceos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ServiceOS — provider-independent business-service execution platform. Business work authority lives in ServiceOS; AI execution authority lives in Zeck.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "dist/src/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "npm run build && node dist/src/cli/check.js && python3 scripts/governance-check.py",
+    "test": "npm run build && node --test \"dist/test/*.test.js\"",
+    "start": "node dist/src/main.js",
+    "migrate": "node dist/src/cli/migrate.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.7.2"
+  }
+}

@@ -12,3 +12,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate repository governance
         run: python3 scripts/governance-check.py
+
+  foundation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install toolchain
+        run: npm ci
+      - name: Build, configuration, architecture structural checks and governance frontier validation
+        run: npm run check
+        env:
+          # On pull requests this is the source branch; on main it is "main".
+          SERVICEOS_EXPECT_BRANCH: ${{ github.head_ref || github.ref_name }}
+      - name: Behavioral, structural and discrimination tests
+        run: npm test
