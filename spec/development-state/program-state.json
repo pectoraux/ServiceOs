@@ -24,13 +24,29 @@
         "pr": 15,
         "mergedAt": "2026-08-31"
       }
+    },
+    {
+      "id": "WORK-002",
+      "title": "Identity/Tenancy",
+      "status": "in_flight",
+      "dependencies": ["WORK-001"],
+      "branch": "feat/WORK-002-identity-tenancy",
+      "pr": null,
+      "implementationRevision": null,
+      "currentMainRevision": "9602ee474a13e7a4b1ee8daa276a64491a183cea",
+      "activationIssue": 16,
+      "assuranceProfile": "CRITICAL",
+      "surfaceFlags": ["documentation","localBehavior","moduleInternals","multiModule","publicContracts","schema","authorityBoundary","securityTenant","concurrency"],
+      "surfaces": ["/auth","/organizations","authorization","tenant-scoped persistence","customer route guards"],
+      "coordination": null,
+      "mergedAs": null
     }
   ],
   "decisions": [
     {"id":"ADR-0001","summary":"ServiceOS delegates all AI execution to Zeck."}
   ],
   "resumption": {
-    "activeHandoffs": [],
+    "activeHandoffs": ["WORK-002"],
     "rule":"A fresh Architect reads repository state before selecting work."
   }
 }
