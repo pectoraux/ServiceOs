@@ -2,10 +2,9 @@
   "schemaVersion": 1,
   "currentGeneration": {
     "complete": ["WORK-001"],
-    "inFlight": []
+    "inFlight": ["WORK-002"]
   },
   "futureGeneration": {
-    "WORK-002": ["WORK-001"],
     "WORK-003": ["WORK-001"],
     "WORK-014": ["WORK-002","WORK-003"],
     "WORK-004": ["WORK-003","WORK-014"],
@@ -21,7 +20,6 @@
     "WORK-013": ["WORK-010","WORK-012"]
   },
   "futureGenerationEligibility": {
-    "WORK-002":"eligible",
     "WORK-003":"eligible",
     "WORK-014":"blocked",
     "WORK-004":"blocked",
