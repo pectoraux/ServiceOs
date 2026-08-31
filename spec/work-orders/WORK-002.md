@@ -83,9 +83,12 @@ Activated by Architect on 2026-08-31.
 
 ## Implementation Evidence (Z.ai delivery record)
 
-Implementation revision: see the PR head recorded below (delivery on
-`feat/WORK-002-identity-tenancy`, branched from the activation tip `29b281c`).
-Delivery date: 2026-08-31.
+Implementation revisions on `feat/WORK-002-identity-tenancy` (PR #17,
+https://github.com/pectoraux/ServiceOs/pull/17): `7900a27` implementation,
+`d830c9b` CI test visibility, `ccb2824` pinned migration proofs, `ebc98f8`
+disposable live-test databases, `957d659` evidence finalization (branch
+head at delivery). Base: activation tip `29b281c` (recorded base revision
+`9602ee4`). Delivery date: 2026-08-31.
 
 ### What was implemented
 
