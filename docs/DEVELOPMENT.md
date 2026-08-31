@@ -108,22 +108,60 @@ real violations instead of passing vacuously — the required
   `pg_advisory_xact_lock(740021)`; versions recorded in
   `serviceos_schema_history`; re-runs are no-ops; history tampering (removed or
   gapped applied versions) fails closed.
-- No business schema ships in WORK-001: durable state belongs to WORK-002/003+.
+- WORK-001 shipped no business schema by design. WORK-002 ships
+  `0001_identity_tenancy.sql` — principals, credentials, organizations,
+  service tenants and memberships with the tenant-integrity constraints
+  (unique slugs, unique memberships, FK discipline, closed role/status
+  enumerations). Later customer-domain tables MUST follow the tenancy
+  discipline: `tenant_id UUID NOT NULL REFERENCES org_service_tenants(id)`
+  queried only through a mandatory tenant predicate.
+- Transactions issued by business modules run client-pinned through the
+  persistence boundary's `TransactionalExecutor` (one acquired PostgreSQL
+  client per transaction), so multi-statement tenant-integrity rules are
+  atomic under real concurrency.
 
-## Server surface (foundation)
+## Identity and tenancy (WORK-002)
+
+- Identity mechanism: humans register with email + scrypt password and log
+  in to receive an opaque bearer session token (SHA-256 digest at rest,
+  revocable, 12-hour TTL). Machine service accounts are password-less
+  principals with opaque API keys (`soak_…`, digest at rest, revocable).
+- One authorization chain: `/auth` verifies credentials
+  (`authenticate`); `/organizations` resolves membership server-side and
+  applies the single capability matrix (`authorize`, guard factory). No other
+  module may export authorization/credential decision entry points — the
+  identity-boundary structural checks fail closed on this.
+- Customer routes: every non-public route is defined with a guard
+  (compile-time requirement, composition-time validation with the
+  `unguarded-route` code). Guards authenticate BEFORE resolving targets, so
+  unauthenticated callers never learn whether an organization/tenant exists.
+  Cross-tenant denials are 403 (`*_FORBIDDEN`), missing resources 404, and
+  denial happens before any domain data is read.
+- Machine credentials derive capabilities only from the membership chain
+  (member/viewer only) — there is no machine-specific grant path (AC-5).
+
+## Server surface (foundation + identity/tenancy)
 
 - `GET /healthz` — liveness; never touches the database.
 - `GET /readyz` — truthful readiness: 503 with reason when persistence is
   unconfigured or unreachable (fail closed), 200 only when `SELECT 1` succeeds.
 - `GET /api/_meta` — composed module metadata (the 16 architecture modules).
+- Identity routes: `POST /api/auth/register`, `POST /api/auth/login`,
+  `POST /api/auth/logout`, `GET /api/auth/me`.
+- Tenancy routes: organization/tenant/membership/service-account management
+  under `/api/organizations/:orgSlug…` and `/api/tenants/:tenantSlug…`, all
+  guard-composed (see WORK-002's route inventory).
 - 404/405/500 JSON error mapping; no stack traces in production.
 
-The control-plane API surface beyond this foundation is owned by WORK-012.
+The control-plane API surface beyond this is owned by WORK-012.
 
 ## Notes and deliberate boundaries
 
-- No ESLint is configured in this foundation; boundary linting is performed by
-  the architecture structural checker (which is stricter and architecture-aware).
+- No ESLint is configured; boundary linting is performed by the architecture
+  structural checker (which is stricter and architecture-aware), including the
+  WORK-002 identity/tenancy boundary checks (`second-authorization-engine`,
+  `second-identity-engine`, `second-route-guard`).
 - The HTTP layer uses Node built-ins only (no framework lock-in); WORK-012 may
   introduce a framework through a governed change.
-- Live-PostgreSQL integration tests are gated on `SERVICEOS_TEST_DATABASE_URL`.
+- Live-PostgreSQL integration tests are gated on `SERVICEOS_TEST_DATABASE_URL`
+  and execute in CI (the governance workflow provisions a PostgreSQL service).

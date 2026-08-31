@@ -24,3 +24,10 @@ export {
   type ArchitectureViolation,
   type ArchitectureCheckOptions,
 } from './architecture-checks.js';
+export {
+  checkIdentityTenancyBoundaries,
+  extractExportNames,
+  RESERVED_AUTHORIZATION_EXPORTS,
+  RESERVED_CREDENTIAL_EXPORTS,
+  ROUTE_GUARD_FACTORY_PATTERN,
+} from './identity-boundary-checks.js';

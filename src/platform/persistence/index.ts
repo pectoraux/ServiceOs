@@ -40,6 +40,20 @@ export interface PooledExecutor extends SqlExecutor {
   end(): Promise<void>;
 }
 
+/**
+ * An executor that can run a unit of work inside a client-pinned transaction.
+ *
+ * WORK-002 addition: `pg.Pool.query` checks out a client per statement, so
+ * BEGIN/work/COMMIT issued through a bare pool are only coincidentally
+ * serialized (same-client reuse in single-actor flows) and racy under
+ * concurrency. A `TransactionalExecutor` guarantees the whole transaction
+ * runs on ONE acquired client. Business modules receive this — never a raw
+ * pool — so multi-statement invariants (tenant integrity rules) hold.
+ */
+export interface TransactionalExecutor extends SqlExecutor {
+  withTransaction<T>(fn: (tx: SqlExecutor) => Promise<T>): Promise<T>;
+}
+
 export class PersistenceError extends Error {
   constructor(message: string, readonly cause?: unknown) {
     super(message);
@@ -100,8 +114,15 @@ export interface PersistenceBoundary {
   pool(): PooledExecutor;
   /**
    * Run a unit of work inside a transaction with rollback-on-error semantics.
+   * The transaction is pinned to a single acquired client (see
+   * `TransactionalExecutor`), so it is atomic under real concurrency.
    */
   withTransaction<T>(fn: (tx: SqlExecutor) => Promise<T>): Promise<T>;
+  /**
+   * A transaction-capable executor for business modules: single statements
+   * run on the pool, `withTransaction` runs client-pinned.
+   */
+  transactional(): TransactionalExecutor;
   /** Truthful readiness probe used by the server's `/readyz` endpoint. */
   ready(): Promise<ReadinessResult>;
   /** Apply pending schema migrations (explicit operator action, never automatic). */
@@ -122,22 +143,48 @@ export interface CreatePersistenceOptions {
 export function createPersistence(options: CreatePersistenceOptions): PersistenceBoundary {
   const { databaseUrl } = options;
   let pool: PooledExecutor | null = null;
+  /** Client acquisition for the real `pg.Pool` (null for injected test doubles). */
+  let acquireClient: (() => Promise<SqlExecutor & { release(): void }>) | null = null;
 
   function getPool(): PooledExecutor {
     if (pool === null) {
       if (databaseUrl === null) {
         throw new PersistenceNotConfiguredError();
       }
-      pool =
-        options.pooledExecutor ??
-        new pg.Pool({
+      if (options.pooledExecutor !== undefined) {
+        pool = options.pooledExecutor;
+        acquireClient = null; // test doubles are single-connection by construction
+      } else {
+        const realPool = new pg.Pool({
           connectionString: databaseUrl,
           // Fail fast instead of hanging when PostgreSQL is unreachable.
           connectionTimeoutMillis: 5000,
           max: 10,
         });
+        pool = realPool;
+        acquireClient = async () => {
+          const client = await realPool.connect();
+          return client as unknown as SqlExecutor & { release(): void };
+        };
+      }
     }
     return pool;
+  }
+
+  /**
+   * Run `fn` on exactly one acquired client (real pool) or on the injected
+   * executor (test double — a fake is inherently single-connection).
+   */
+  async function withPinnedClient<T>(fn: (tx: SqlExecutor) => Promise<T>): Promise<T> {
+    if (acquireClient !== null) {
+      const client = await acquireClient();
+      try {
+        return await fn(client);
+      } finally {
+        client.release();
+      }
+    }
+    return fn(getPool());
   }
 
   async function ready(): Promise<ReadinessResult> {
@@ -161,13 +208,21 @@ export function createPersistence(options: CreatePersistenceOptions): Persistenc
   return {
     isConfigured: () => databaseUrl !== null,
     pool: getPool,
-    withTransaction: <T>(fn: (tx: SqlExecutor) => Promise<T>) => withTransactionOn(getPool(), fn),
+    withTransaction: <T>(fn: (tx: SqlExecutor) => Promise<T>) =>
+      withPinnedClient((client) => withTransactionOn(client, fn)),
+    transactional: () => ({
+      query: (sql: string, params?: unknown[]) => getPool().query(sql, params),
+      withTransaction: <T>(fn: (tx: SqlExecutor) => Promise<T>) =>
+        withPinnedClient((client) => withTransactionOn(client, fn)),
+    }),
     ready,
-    migrate: (migrations) => applyMigrations(getPool(), migrations),
+    migrate: (migrations) =>
+      withPinnedClient((client) => applyMigrations(client, migrations)),
     stop: async () => {
       if (pool !== null) {
         await pool.end();
         pool = null;
+        acquireClient = null;
       }
     },
   };

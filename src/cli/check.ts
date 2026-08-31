@@ -20,6 +20,7 @@ import { resolve } from 'node:path';
 import { loadConfig } from '../platform/config/index.js';
 import {
   checkArchitecture,
+  checkIdentityTenancyBoundaries,
   checkPackageDependencies,
   readProgramState,
   currentLiveWorkOrder,
@@ -61,6 +62,7 @@ function main(): void {
   const violations = [
     ...checkArchitecture({ srcRoot, repoRoot }),
     ...checkPackageDependencies(resolve(repoRoot, 'package.json')),
+    ...checkIdentityTenancyBoundaries(srcRoot),
   ];
   if (violations.length > 0) {
     for (const violation of violations) {
@@ -69,7 +71,12 @@ function main(): void {
     fail(`architecture structural checks found ${violations.length} violation(s)`);
   }
   const moduleCount = checkArchitectureModuleCount(srcRoot);
-  console.log(`architecture: module tree conforms to frozen v1.0 architecture (${moduleCount} modules, no violations)`);
+  console.log(
+    `architecture: module tree conforms to frozen v1.0 architecture (${moduleCount} modules, no violations)`,
+  );
+  console.log(
+    `identity/tenancy: single authorization chain, single identity engine, single route-guard factory (no violations)`,
+  );
 
   // 3. Canonical governance state: frontier + Work Order identity (AC-4).
   let status;

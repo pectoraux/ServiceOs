@@ -46,12 +46,9 @@ def main():
     graph=dict(dep["futureGeneration"])
     records={r["id"]:r for r in prog.get("workOrders",[])}
     if len(records)!=len(prog.get("workOrders",[])): fail("duplicate Work Order identities in program-state")
-    # Activated records carry the canonical dependency list even after they leave futureGeneration.
-    full_graph={}
-    full_graph.update(graph)
+    full_graph={}; full_graph.update(graph)
     for wid,r in records.items(): full_graph[wid]=r.get("dependencies",[])
-    for wid in all_ids:
-        full_graph.setdefault(wid,[])
+    for wid in all_ids: full_graph.setdefault(wid,[])
     for wid,deps in full_graph.items():
         for d in deps:
             if d not in all_ids: fail(f"{wid} depends on unknown Work Order {d}")
