@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
-  "currentMain": "05af8b18b30f33848d16e59fc3aba405ac0993b3",
-  "currentLiveImplementation": "WORK-001",
-  "plannedNext": [],
+  "currentMain": "8bf0336b25eaebed416eacb7236233149885d181",
+  "currentLiveImplementation": null,
+  "plannedNext": ["WORK-002","WORK-003","WORK-011"],
   "plannedFuture": [
-    "WORK-002","WORK-003","WORK-004","WORK-005","WORK-006","WORK-007","WORK-008","WORK-009","WORK-010","WORK-011","WORK-012","WORK-013","WORK-014","WORK-015"
+    "WORK-002","WORK-003","WORK-014","WORK-004","WORK-015","WORK-005","WORK-007","WORK-008","WORK-009","WORK-006","WORK-010","WORK-011","WORK-012","WORK-013"
   ],
-  "inFlight": ["WORK-001"],
+  "inFlight": [],
   "knownConflicts": [],
-  "rule": "Architect activation is required before a planned Work Order becomes in-flight. While a Work Order is in-flight, plannedNext is empty and the Architect must inspect that Work Order before authorizing another."
+  "rule": "The Architect selects only dependency-eligible planned Work Orders. With no Work Order in flight, plannedNext exposes the current eligible frontier; activation is still required before implementation."
 }
