@@ -76,4 +76,4 @@ See `docs/DEVELOPMENT.md` for the full operational reference (configuration, mod
 
 ## Program status
 
-Architecture v1.0 is frozen for implementation. The repository begins with 15 planned Work Orders and no activated runtime implementation. `WORK-001` is the initial dependency-eligible frontier head. Program state evolves in `spec/development-state/`; the governance checker is designed for both bootstrap and post-activation states.
+Architecture v1.0 is frozen for implementation. `WORK-001` (ServiceOS Foundation) is complete and merged as PR #15 (`8bf0336b25eaebed416eacb7236233149885d181`). The current implementation frontier is `WORK-002`, `WORK-003`, and `WORK-011`; none are activated yet. Program state evolves in `spec/development-state/`, and the governance checker validates both bootstrap and live program states.
