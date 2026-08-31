@@ -1,6 +1,6 @@
 # WORK-001
 
-Status: planned
+Status: in_flight
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: HIGH_ASSURANCE
@@ -77,3 +77,13 @@ Must preserve:
 ## Definition Of Done
 
 See TEMPLATE.md.
+
+## Activation Record
+
+Activated by Architect on 2026-08-31.
+
+- Branch: `feat/WORK-001-foundation`
+- Base revision: `9b577575dee0e257112405d4f3a4f874cb9de0d4`
+- Activation issue: `#1`
+- Implementation authority: Z.ai
+- Review/merge authority: Architect
