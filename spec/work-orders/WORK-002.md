@@ -1,6 +1,6 @@
 # WORK-002
 
-Status: planned
+Status: in_flight
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: CRITICAL
@@ -70,3 +70,13 @@ Forbidden:
 ## Definition Of Done
 
 See TEMPLATE.md.
+
+## Activation Record
+
+Activated by Architect on 2026-08-31.
+
+- Branch: `feat/WORK-002-identity-tenancy`
+- Base revision: `9602ee474a13e7a4b1ee8daa276a64491a183cea`
+- Activation issue: `#16`
+- Implementation authority: Z.ai
+- Review/merge authority: Architect
