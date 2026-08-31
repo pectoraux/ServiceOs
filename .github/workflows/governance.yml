@@ -49,5 +49,11 @@ jobs:
           # Unprefixed on purpose: unknown SERVICEOS_* variables fail the
           # configuration typo guard.
           EXPECT_BRANCH: ${{ github.head_ref || github.ref_name }}
-      - name: Behavioral, structural and discrimination tests
+      - name: Behavioral, structural, discrimination and live-PostgreSQL tests
+        # Runs even when the repository governance validation above has failed
+        # on a pre-existing main-branch state issue: WORK-002's CRITICAL
+        # assurance requires the behavioral and live-database proof results to
+        # be independently visible for Architect review. The job still fails
+        # overall when any step fails.
+        if: always()
         run: npm test
