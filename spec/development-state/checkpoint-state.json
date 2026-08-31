@@ -1,6 +1,17 @@
 {
   "schemaVersion": 1,
   "active": [],
-  "completed": [],
-  "rule": "Checkpoint verdicts are tied to actual implementation revisions and proof evidence."
+  "completed": [
+    {
+      "workOrder": "WORK-001",
+      "pr": 15,
+      "implementationRevision": "a994f24d909c6db7e0d876553e4329a071fa36b7",
+      "mergedAs": "8bf0336b25eaebed416eacb7236233149885d181",
+      "verdict": "approved",
+      "assuranceProfile": "HIGH_ASSURANCE",
+      "proofs": ["static","dynamic","discrimination"],
+      "knownLimitations": ["live PostgreSQL integration tests were gated/skipped in the implementation environment"]
+    }
+  ],
+  "rule": "Checkpoint verdicts are tied to actual implementation revisions and proof evidence. A completed Work Order remains auditable through its PR, implementation revision and merge commit."
 }
