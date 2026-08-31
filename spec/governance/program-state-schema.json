@@ -1,0 +1,31 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "title":"ServiceOS Program State",
+  "type":"object",
+  "required":["schemaVersion","architectureVersion","status","workOrders","decisions","resumption"],
+  "properties":{
+    "schemaVersion":{"const":1},
+    "architectureVersion":{"type":"string"},
+    "asOf":{"type":"string"},
+    "status":{"enum":["ready","in_progress","blocked","complete"]},
+    "workOrders":{
+      "type":"array",
+      "items":{
+        "type":"object",
+        "required":["id","status","dependencies","branch"],
+        "properties":{
+          "id":{"pattern":"^WORK-[0-9]{3}$"},
+          "status":{"enum":["in_flight","blocked","complete"]},
+          "dependencies":{"type":"array","items":{"pattern":"^WORK-[0-9]{3}$"}},
+          "branch":{"type":"string"},
+          "pr":{"type":["integer","null"]},
+          "implementationRevision":{"type":["string","null"]},
+          "mergedAs":{"type":["object","null"]},
+          "coordination":{"type":["object","null"]}
+        }
+      }
+    },
+    "decisions":{"type":"array"},
+    "resumption":{"type":"object"}
+  }
+}
