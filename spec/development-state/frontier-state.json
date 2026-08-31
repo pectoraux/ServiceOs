@@ -1,26 +1,12 @@
 {
   "schemaVersion": 1,
-  "currentMain": "bootstrap",
+  "currentMain": "97e1755ecfd7e1735627cea2ba89f663438171eb",
   "currentLiveImplementation": null,
-  "plannedNext": [
-    "WORK-001"
-  ],
+  "plannedNext": [],
   "plannedFuture": [
-    "WORK-002",
-    "WORK-003",
-    "WORK-004",
-    "WORK-005",
-    "WORK-006",
-    "WORK-007",
-    "WORK-008",
-    "WORK-009",
-    "WORK-010",
-    "WORK-011",
-    "WORK-012",
-    "WORK-013",
-    "WORK-014",
-    "WORK-015"
+    "WORK-002","WORK-003","WORK-004","WORK-005","WORK-006","WORK-007","WORK-008","WORK-009","WORK-010","WORK-011","WORK-012","WORK-013","WORK-014","WORK-015"
   ],
+  "inFlight": ["WORK-001"],
   "knownConflicts": [],
-  "rule": "Architect activation is required before a planned Work Order becomes in-flight. Parallel eligibility is advisory until protected surfaces are declared in program-state."
+  "rule": "Architect activation is required before a planned Work Order becomes in-flight. While a Work Order is in-flight, plannedNext is empty and the Architect must inspect that Work Order before authorizing another."
 }
