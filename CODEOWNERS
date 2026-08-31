@@ -1,0 +1,3 @@
+# Architect ownership: architecture/governance changes require the architecture owner.
+/spec/ @pectoraux
+/docs/adr/ @pectoraux

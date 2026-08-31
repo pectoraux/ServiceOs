@@ -1,0 +1,20 @@
+name: Work Order
+about: Propose a governed implementation Work Order
+labels: [work-order]
+body:
+  - type: markdown
+    attributes:
+      value: "Work Orders become implementation scope only after Architect review and activation."
+  - type: input
+    id: title
+    attributes:
+      label: Title
+      placeholder: "WORK-NNN — ..."
+    validations:
+      required: true
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+    validations:
+      required: true

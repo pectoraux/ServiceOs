@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "profiles": {
+    "LIGHT": {"requiredProofs": ["static"], "reviewRecord": false},
+    "STANDARD": {"requiredProofs": ["static", "dynamic"], "reviewRecord": false},
+    "HIGH_ASSURANCE": {"requiredProofs": ["static", "dynamic", "discrimination"], "reviewRecord": false},
+    "CRITICAL": {"requiredProofs": ["static", "dynamic", "discrimination", "concurrency"], "reviewRecord": true}
+  },
+  "surfaceSelection": [
+    {"profile": "CRITICAL", "whenAny": ["authorityBoundary", "securityTenant", "schema", "externalSideEffects"]},
+    {"profile": "HIGH_ASSURANCE", "whenAny": ["publicContracts", "concurrency"]},
+    {"profile": "STANDARD", "whenAny": ["moduleInternals", "multiModule"]},
+    {"profile": "LIGHT", "whenAny": ["documentation", "localBehavior"]}
+  ],
+  "default": "HIGH_ASSURANCE",
+  "rule": "Assurance changes proof depth only. It never changes domain authority or frozen boundary semantics."
+}

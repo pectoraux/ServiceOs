@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "unit": "one-work-order-per-branch-pr",
+  "requiredContext": [
+    "repository",
+    "currentMainRevision",
+    "workOrder",
+    "architectureVersion",
+    "dependencies",
+    "allowedSurfaces",
+    "forbiddenSurfaces",
+    "assuranceProfile",
+    "checkpointContracts",
+    "requiredProofs",
+    "zeckBoundary"
+  ],
+  "workerMay": [
+    "inspect-repository",
+    "implement-work-order",
+    "add-tests",
+    "update-work-order-evidence",
+    "open-or-update-pr"
+  ],
+  "workerMayNot": [
+    "activate-work-order",
+    "merge-own-pr",
+    "modify-another-work-order-scope",
+    "change-governing-architecture-without-acr",
+    "bypass-serviceos-authoritative-domain",
+    "implement-ai-authority-inside-serviceos",
+    "call-ai-provider-directly-from-serviceos",
+    "invent-second-authority",
+    "silently-lower-assurance",
+    "treat-conversation-as-source-of-truth"
+  ],
+  "completionReport": [
+    "implementationRevision",
+    "changedSurfaces",
+    "checksRun",
+    "proofResults",
+    "knownLimitations",
+    "prNumber"
+  ],
+  "parallelEligibility": "all dependency prerequisites complete AND no uncoordinated protected-surface conflict AND current-base revision matches governance expectation",
+  "mergeAuthority": "architect"
+}

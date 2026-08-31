@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "architectureVersion": "v1.0",
+  "asOf": "2026-08-31",
+  "status": "ready",
+  "workOrders": [],
+  "decisions": [
+    {"id":"ADR-0001","summary":"ServiceOS delegates all AI execution to Zeck."}
+  ],
+  "resumption": {
+    "activeHandoffs": [],
+    "rule":"A fresh Architect reads repository state before selecting work."
+  }
+}

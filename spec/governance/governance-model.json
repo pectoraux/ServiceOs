@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "artifact": "serviceos-governance-model",
+  "authority": {"owner":"architect", "repository":"GitHub", "conversation":"coordination-only"},
+  "workOrderStatuses": ["planned","in_flight","blocked","complete"],
+  "proofClasses": ["static","dynamic","discrimination","concurrency"],
+  "surfaceFlags": ["documentation","localBehavior","moduleInternals","multiModule","publicContracts","schema","concurrency","externalSideEffects","authorityBoundary","securityTenant"],
+  "businessWorkStates": ["DRAFT","READY","ACCEPTED","IN_PROGRESS","WAITING_INFORMATION","WAITING_APPROVAL","BLOCKED","VERIFYING","COMPLETED","CANCELLED","FAILED","EXPIRED"],
+  "implementationControlLoop": ["SENSE","UNDERSTAND","PLAN","CHECK","EXECUTE","VERIFY","REVIEW","MERGE","FINALIZE","LEARN","SENSE"],
+  "rule": "The implementation control loop is the governance loop. Customer Service Work has its own business state machine and must never be conflated with implementation Work Orders or Zeck Executions.",
+  "completionRule": "A Work Order is complete only after implementation evidence, required proofs, Architect approval, merge, and post-merge canonical-state finalization.",
+  "postMergeFinalization": "A merge without canonical state reconciliation is a detected red window, not complete program state.",
+  "aiRule": "All AI execution capabilities are delegated to Zeck; ServiceOS owns only business-domain consequences and deterministic business authority."
+}

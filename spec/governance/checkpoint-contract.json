@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "checkpoints": [
+    {"id":"AUTHORITY-PRESERVATION","severity":"blocking","statement":"Every governed business mutation flows through its owning ServiceOS authority."},
+    {"id":"ZECK-ONLY-AI","severity":"blocking","statement":"ServiceOS contains no model/provider/agent/tool/context/planning AI authority; AI execution is delegated to Zeck."},
+    {"id":"TENANT-ISOLATION","severity":"blocking","statement":"Tenant ownership is resolved and enforced server-side before domain access or mutation."},
+    {"id":"STATE-SEPARATION","severity":"blocking","statement":"ServiceWork state and Zeck Execution state remain separate authorities."},
+    {"id":"EXTERNAL-SIDE-EFFECTS","severity":"blocking","statement":"Business external effects use durable intent, authorization, idempotency and observed results."},
+    {"id":"EVIDENCE-PROVENANCE","severity":"blocking","statement":"Material business outcomes have attributable evidence and provenance."},
+    {"id":"CONCURRENCY-CRASH-SAFETY","severity":"blocking","statement":"Concurrent/retried durable operations converge without duplicate authority or stale-state mutation."},
+    {"id":"ARCHITECTURE-IMMUTABILITY","severity":"blocking","statement":"Frozen architecture changes occur only through ACR and immutable versioning."},
+    {"id":"SCOPE-CONFORMANCE","severity":"blocking","statement":"An implementation PR changes only its activated Work Order surfaces."}
+  ]
+}

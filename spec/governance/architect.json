@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "authority": "serviceos-architecture-governance",
+  "principal": "@pectoraux",
+  "architectRole": "LLM Architect",
+  "decisionRights": [
+    "approve-architecture-change",
+    "approve-work-order",
+    "activate-work-order",
+    "approve-checkpoint-verdict",
+    "reject-implementation",
+    "authorize-remediation",
+    "approve-merge",
+    "finalize-post-merge-state"
+  ],
+  "nonDelegable": [
+    "change-governing-architecture",
+    "weaken-frozen-invariant",
+    "bypass-business-verification",
+    "bypass-review",
+    "bypass-merge-gate",
+    "promote-agent-claims-to-authority"
+  ],
+  "implementationAgents": [
+    "z-ai"
+  ],
+  "rule": "The LLM Architect determines semantic scope, authority, verification and merge decisions. Z.ai agents implement only architect-activated Work Orders. The repository is the persistent architecture/program record."
+}
