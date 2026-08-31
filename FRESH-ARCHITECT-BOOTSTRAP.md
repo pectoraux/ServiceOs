@@ -2,73 +2,91 @@
 
 > The repository, not the previous conversation, is authoritative.
 
-A new Architect LLM should be able to start from this repository alone.
+A new LLM Architect should be able to take over from this repository alone.
 
-## 1. Governing architecture
+## 1. Read in order
 
-Read in this order:
+1. `README.md`
+2. `AGENTS.md`
+3. `docs/ARCHITECT-RUNBOOK.md`
+4. `docs/IMPLEMENTATION-HANDOFF.md`
+5. `spec/architecture/v1.0/architecture.md`
+6. `spec/architecture/v1.0/architecture-lock.md`
+7. `spec/architecture/v1.0/authority-matrix.md`
+8. `spec/architecture/v1.0/zeck-boundary.md`
+9. `spec/architecture/v1.0/zeck-integration-contract.md`
+10. `spec/architecture/v1.0/domain-model.md`
+11. `spec/architecture/v1.0/work-execution-model.md`
+12. `spec/architecture/v1.0/vertical-model.md`
+13. `spec/architecture/v1.0/integration-model.md`
+14. `spec/governance/*.json`
+15. `spec/development-state/*.json`
+16. the relevant `spec/work-orders/WORK-NNN.md`
 
-1. `spec/architecture/v1.0/architecture.md`
-2. `spec/architecture/v1.0/architecture-lock.md`
-3. `spec/architecture/v1.0/zeck-boundary.md`
-4. `spec/architecture/v1.0/domain-model.md`
-5. `spec/architecture/v1.0/work-execution-model.md`
-6. `spec/architecture/v1.0/vertical-model.md`
-7. `spec/architecture/v1.0/integration-model.md`
+Run `python3 scripts/governance-check.py` before authorizing implementation.
 
-v1.0 is the frozen implementation baseline.
+## 2. Governing architecture
 
-## 2. AI authority
+Architecture v1.0 is frozen for implementation. Do not edit frozen rules in place. A frozen architecture change requires an Architecture Change Request and a new immutable architecture version.
+
+## 3. AI authority
 
 `pectoraux/Zeck` is the sole AI execution authority.
 
-The ServiceOS `/zeck` module is only an integration boundary. It must never become a second AI runtime.
+ServiceOS owns business-domain consequences. The `/zeck` module is only an integration boundary. Never introduce a local AI runtime, model/provider routing, agent/tool runtime, AI context compiler, AI planner, AI verification authority or AI-learning authority.
 
-## 3. Program state
+## 4. Program state
 
-Read:
+`spec/development-state/program-state.json` is the lifecycle record for activated Work Orders. `dependency-state.json` is the canonical dependency graph. `frontier-state.json` is derived eligibility. `checkpoint-state.json` records proof/checkpoint state.
 
-- `spec/development-state/program-state.json`
-- `spec/development-state/dependency-state.json`
-- `spec/development-state/frontier-state.json`
-- `spec/development-state/checkpoint-state.json`
-- `spec/governance/future-roadmap.json`
+At bootstrap all Work Orders are planned and `WORK-001` is the only dependency-eligible frontier head. After activation/completion the same artifacts evolve; the governance checker is intentionally lifecycle-aware and must continue to pass.
 
-At bootstrap all 15 Work Orders are `planned`; no runtime implementation has been activated. `WORK-001` is the only dependency-eligible frontier head.
+## 5. Naming and authority separation
 
-## 4. Implementation workflow
+- **Work Order** — implementation-program artifact governed by the Architect.
+- **Service Work** — customer runtime business job governed by ServiceOS workflow authority.
+- **Zeck Execution** — external AI execution object governed by Zeck.
 
-The implementation workflow is documented in `docs/WORKFLOW.md` and adapted from WorkflowOS. The canonical worker constraints are in `spec/governance/worker-protocol.json`.
+Never collapse these identities or state machines.
 
-One activated Work Order = one branch + one active PR.
+## 6. Implementation workflow
 
-Z.ai implements. The Architect reviews and controls architecture/merge decisions.
+The workflow is adapted from WorkflowOS:
 
-## 5. Runtime/domain naming
+```text
+Frozen Architecture
+  -> Requirements
+  -> Work Order
+  -> Architect Activation
+  -> Z.ai implementation branch/PR
+  -> Proof/evidence
+  -> Architect independent review
+  -> Architect merge
+  -> Post-merge finalization
+  -> Derived-state rebuild
+  -> Next frontier
+```
 
-Do not confuse:
+One activated Work Order maps to one branch and one PR. Z.ai implements. The Architect controls activation, architecture, review, approval, merge and finalization.
 
-- **Work Order** — implementation-program artifact.
-- **Service Work** — customer business-work runtime object.
-- **Zeck Execution** — external AI execution object owned by Zeck.
+## 7. Authority decision rule for new features
 
-These are separate authorities and identities.
+```text
+How AI computes/routes/reasons/uses tools/compiles context/selects providers?
+    -> Zeck
 
-## 6. Current frontier
+What the customer/business is allowed to do, what state it is in,
+what policy applies, whether a business outcome occurred?
+    -> ServiceOS
 
-`WORK-001` is the first dependency-eligible Work Order. `WORK-014` (Business Policy Authority) and `WORK-015` (External Interaction & Integration Authority) are deliberately scheduled before the vertical consumer layer so no implementer is forced to invent missing horizontal authorities.
+What record is canonically owned by an external business system?
+    -> external system, accessed through a ServiceOS adapter
+```
 
-It is not activated until the Architect records activation in `program-state.json`.
+When uncertain, stop rather than inventing an authority.
 
-## 7. When AI-related requests appear
+## 8. Current implementation frontier
 
-First classify the requested behavior:
+`WORK-001` is the first eligible Work Order. `WORK-014` establishes the business-policy authority and `WORK-015` establishes the external-interaction/integration authority before downstream consumer work.
 
-- business authority/rules/state → ServiceOS
-- AI reasoning/execution/model/tool/context/planning/AI verification/AI learning → Zeck
-
-Do not accept an AI feature into ServiceOS simply because it is used by a vertical. A vertical declares its required Zeck capabilities; it does not implement them.
-
-## 8. Architecture change
-
-Never edit v1.0 in place to solve an implementation problem. Record an ACR and create a new immutable architecture version.
+No Work Order is activated merely because it is present in `spec/work-orders/`.
