@@ -35,23 +35,23 @@ def main():
     front=load("spec/development-state/frontier-state.json"); prog=load("spec/development-state/program-state.json")
     gov=load("spec/governance/governance-model.json")
     wo_files=sorted(p.stem for p in (ROOT/"spec/work-orders").glob("WORK-*.md")); all_ids=set(wo_files)
-    future=list(dep["futureGeneration"]); current_complete=set(dep["currentGeneration"].get("complete",[])); current_inflight=set(dep["currentGeneration"].get("inFlight",[])); future_set=set(future)
+    current_complete=set(dep["currentGeneration"].get("complete",[])); current_inflight=set(dep["currentGeneration"].get("inFlight",[]))
+    future=list(dep["futureGeneration"]); future_set=set(future)
     road_ids=road["sequence"]
-    if set(road_ids)!=future_set or len(road_ids)!=len(set(road_ids)): fail("future roadmap must cover every future Work Order exactly once")
+    expected_road_ids=future_set | current_inflight
+    if set(road_ids)!=expected_road_ids or len(road_ids)!=len(set(road_ids)): fail("future roadmap must cover every future Work Order exactly once plus any in-flight Work Order")
     if current_complete & current_inflight: fail("currentGeneration overlaps complete and inFlight")
     if (current_complete|current_inflight)&future_set: fail("a Work Order appears in current and future generation")
     if current_complete|current_inflight|future_set!=all_ids: fail("generation state does not cover exactly all Work Order files")
     waves=sum(road["parallelWaves"],[])
-    if set(waves)!=future_set or len(waves)!=len(set(waves)): fail("parallel waves must cover every future Work Order exactly once")
+    if set(waves)!=expected_road_ids or len(waves)!=len(set(waves)): fail("parallel waves must cover the roadmap Work Orders exactly once")
     graph=dict(dep["futureGeneration"])
     records={r["id"]:r for r in prog.get("workOrders",[])}
     if len(records)!=len(prog.get("workOrders",[])): fail("duplicate Work Order identities in program-state")
-    # Activated records carry the canonical dependency list even after they leave futureGeneration.
     full_graph={}
     full_graph.update(graph)
     for wid,r in records.items(): full_graph[wid]=r.get("dependencies",[])
-    for wid in all_ids:
-        full_graph.setdefault(wid,[])
+    for wid in all_ids: full_graph.setdefault(wid,[])
     for wid,deps in full_graph.items():
         for d in deps:
             if d not in all_ids: fail(f"{wid} depends on unknown Work Order {d}")
