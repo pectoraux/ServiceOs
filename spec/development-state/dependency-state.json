@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "currentGeneration": {
-    "complete": [],
-    "inFlight": ["WORK-001"]
+    "complete": ["WORK-001"],
+    "inFlight": []
   },
   "futureGeneration": {
     "WORK-002": ["WORK-001"],
@@ -21,6 +21,19 @@
     "WORK-013": ["WORK-010","WORK-012"]
   },
   "futureGenerationEligibility": {
-    "WORK-002":"blocked","WORK-003":"blocked","WORK-014":"blocked","WORK-004":"blocked","WORK-015":"blocked","WORK-005":"blocked","WORK-007":"blocked","WORK-008":"blocked","WORK-009":"blocked","WORK-006":"blocked","WORK-010":"blocked","WORK-011":"blocked","WORK-012":"blocked","WORK-013":"blocked"
+    "WORK-002":"eligible",
+    "WORK-003":"eligible",
+    "WORK-014":"blocked",
+    "WORK-004":"blocked",
+    "WORK-015":"blocked",
+    "WORK-005":"blocked",
+    "WORK-007":"blocked",
+    "WORK-008":"blocked",
+    "WORK-009":"blocked",
+    "WORK-006":"blocked",
+    "WORK-010":"blocked",
+    "WORK-011":"eligible",
+    "WORK-012":"blocked",
+    "WORK-013":"blocked"
   }
 }
