@@ -94,7 +94,10 @@ function main(): void {
   }
 
   // 4. Branch conformance for the in-flight Work Order (worker guard).
-  const expectedBranch = process.env.SERVICEOS_EXPECT_BRANCH ?? gitBranch();
+  // EXPECT_BRANCH is deliberately unprefixed: it is a tooling/CI concern, not
+  // ServiceOS runtime configuration, and the config typo guard fails closed on
+  // unknown SERVICEOS_* variables.
+  const expectedBranch = process.env.EXPECT_BRANCH ?? gitBranch();
   if (live !== null) {
     console.log(
       `work order: ${live.id} [${live.status}] on branch ${live.branch} (assurance ${live.assuranceProfile ?? 'unknown'})`,

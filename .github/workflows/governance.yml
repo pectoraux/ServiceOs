@@ -27,6 +27,8 @@ jobs:
         run: npm run check
         env:
           # On pull requests this is the source branch; on main it is "main".
-          SERVICEOS_EXPECT_BRANCH: ${{ github.head_ref || github.ref_name }}
+          # Unprefixed on purpose: unknown SERVICEOS_* variables fail the
+          # configuration typo guard.
+          EXPECT_BRANCH: ${{ github.head_ref || github.ref_name }}
       - name: Behavioral, structural and discrimination tests
         run: npm test
