@@ -91,7 +91,7 @@ Activated by Architect on 2026-08-31.
 ## Implementation Evidence (Z.ai delivery record)
 
 Implementation revision: `d94d3c7` (+ evidence commits on `feat/WORK-001-foundation`).
-Delivery date: 2026-08-31. PR: recorded in the delivery PR description and the repository PR itself.
+Delivery date: 2026-08-31. PR: #15 (https://github.com/pectoraux/ServiceOs/pull/15).
 
 ### Changed surfaces (allowed scope only)
 
