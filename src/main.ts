@@ -1,9 +1,18 @@
 /**
- * ServiceOS composition root (WORK-001 foundation).
+ * ServiceOS composition root (WORK-001 foundation, WORK-002 identity wiring).
  *
  * This is the only place outside the module tree that composes business
  * modules. It wires:
- *   configuration -> persistence boundary -> module registry -> HTTP server
+ *   configuration -> persistence boundary -> identity/tenancy modules
+ *                 -> module registry -> guarded customer routes -> HTTP server
+ *
+ * Composition facts (WORK-002):
+ * - /auth owns credential verification; /organizations consumes its public
+ *   interface (`authenticate` + identity operations) — injected here, never
+ *   re-implemented there, so the authorization chain stays singular.
+ * - Every customer route reaches the server only through the modules' route
+ *   descriptors, whose non-public entries require the guard resolved
+ *   server-side (fail-closed at composition).
  *
  * The server does NOT auto-initialize durable state: schema migrations are an
  * explicit operator action (`npm run migrate`). PostgreSQL must be configured
@@ -14,6 +23,8 @@ import { createLogger } from './platform/logging/index.js';
 import { createPersistence } from './platform/persistence/index.js';
 import { registerModules, type ServiceModule } from './platform/module-registry/index.js';
 import { composeServer } from './platform/http/index.js';
+import { createAuthModule } from './modules/auth/index.js';
+import { createOrganizationsModule } from './modules/organizations/index.js';
 
 import auth from './modules/auth/index.js';
 import organizations from './modules/organizations/index.js';
@@ -61,8 +72,27 @@ export async function main(): Promise<void> {
   const logger = createLogger(config.logLevel, { service: 'serviceos' });
 
   const persistence = createPersistence({ databaseUrl: config.databaseUrl });
+  const executor = persistence.transactional();
+
+  // Identity substrate (/auth) and tenancy authority (/organizations). The
+  // organizations module receives /auth's public interface — the single
+  // credential-verification entry point — so its guard composes one
+  // authorization chain: authenticate -> server-side resolve -> roleAllows.
+  const authModule = createAuthModule({ executor });
+  const organizationsModule = createOrganizationsModule({
+    executor,
+    authenticator: authModule.authenticate,
+    identity: authModule,
+  });
+
   const modules = registerModules(SERVICE_MODULES);
-  const server = composeServer({ modules, readiness: persistence, config, logger });
+  const server = composeServer({
+    modules,
+    readiness: persistence,
+    config,
+    logger,
+    customerRoutes: [...authModule.routes(), ...organizationsModule.routes()],
+  });
 
   const shutdown = async (signal: string): Promise<void> => {
     logger.info('shutting down', { signal });
@@ -81,6 +111,7 @@ export async function main(): Promise<void> {
     port,
     nodeEnv: config.nodeEnv,
     modules: modules.names().length,
+    customerRoutes: [...authModule.routes(), ...organizationsModule.routes()].length,
     persistenceConfigured: persistence.isConfigured(),
   });
 }
