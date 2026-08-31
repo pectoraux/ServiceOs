@@ -36,9 +36,9 @@ def main():
         "spec/architecture/v1.0/architecture.md", "spec/architecture/v1.0/architecture-lock.md",
         "spec/architecture/v1.0/authority-matrix.md", "spec/architecture/v1.0/zeck-integration-contract.md",
         "spec/governance/governance-model.json", "spec/governance/architect.json",
-        "spec/governance/future-roadmap.json", "spec/development-state/program-state.json",
-        "spec/development-state/dependency-state.json", "spec/development-state/frontier-state.json",
-        "spec/development-state/checkpoint-state.json",
+        "spec/governance/future-roadmap.json", "spec/governance/program-state-schema.json",
+        "spec/development-state/program-state.json", "spec/development-state/dependency-state.json",
+        "spec/development-state/frontier-state.json", "spec/development-state/checkpoint-state.json",
     ]
     for rel in required:
         if not (ROOT / rel).exists():
@@ -50,35 +50,40 @@ def main():
     prog = load("spec/development-state/program-state.json")
     gov = load("spec/governance/governance-model.json")
 
+    wo_files = sorted(p.stem for p in (ROOT / "spec/work-orders").glob("WORK-*.md"))
+    all_ids = set(wo_files)
+    if len(wo_files) != len(all_ids):
+        fail("duplicate Work Order identity")
+
+    # Roadmap/dependency state covers only the future (not yet activated/completed) generation.
     road_ids = road["sequence"]
-    if list(dep["futureGeneration"]) != road_ids:
+    future_ids = list(dep["futureGeneration"])
+    if future_ids != road_ids:
         fail("futureGeneration key order != roadmap sequence")
+    if not set(future_ids) <= all_ids:
+        fail("futureGeneration contains unknown Work Order identity")
+
     waves = sum(road["parallelWaves"], [])
     if set(waves) != set(road_ids) or len(waves) != len(set(waves)):
-        fail("parallel waves do not cover each roadmap Work Order exactly once")
+        fail("parallel waves do not cover each future Work Order exactly once")
 
-    wo_files = sorted(p.stem for p in (ROOT / "spec/work-orders").glob("WORK-*.md"))
-    if sorted(wo_files) != sorted(road_ids) or len(wo_files) != len(set(wo_files)):
-        fail("Work Order files != canonical roadmap identities")
-
-    ids = set(road_ids)
     current_complete = set(dep["currentGeneration"].get("complete", []))
     current_inflight = set(dep["currentGeneration"].get("inFlight", []))
-    future = set(dep["futureGeneration"])
+    future = set(future_ids)
     if current_complete & current_inflight:
         fail("currentGeneration overlaps complete and inFlight")
     if (current_complete | current_inflight) & future:
         fail("a Work Order appears in current and future generation")
-    if current_complete | current_inflight | future != ids:
-        fail("generation state does not cover exactly all known Work Orders")
+    if current_complete | current_inflight | future != all_ids:
+        fail("generation state does not cover exactly all Work Order files")
 
     graph = dep["futureGeneration"]
     for wid, deps in graph.items():
         for d in deps:
-            if d not in ids:
+            if d not in all_ids:
                 fail(f"{wid} depends on unknown {d}")
 
-    state = {k: 0 for k in ids}
+    state = {k: 0 for k in all_ids}
     def visit(n: str):
         if state[n] == 1:
             fail(f"dependency cycle detected at {n}")
@@ -89,21 +94,24 @@ def main():
             if d in graph:
                 visit(d)
         state[n] = 2
-    for n in ids:
+    for n in all_ids:
         visit(n)
 
     records = {r["id"]: r for r in prog.get("workOrders", [])}
     if len(records) != len(prog.get("workOrders", [])):
         fail("duplicate Work Order identities in program-state")
     for wid, record in records.items():
-        if wid not in ids:
+        if wid not in all_ids:
             fail(f"program-state contains unknown Work Order {wid}")
         if record.get("status") not in {"in_flight", "blocked", "complete"}:
             fail(f"program-state {wid} has invalid activated status")
-        if record.get("branch") is None:
-            fail(f"program-state {wid} missing branch")
-        if record.get("dependencies") != graph.get(wid, []):
+        for field in ("branch", "dependencies"):
+            if field not in record:
+                fail(f"program-state {wid} missing {field}")
+        if record["dependencies"] != graph.get(wid, []):
             fail(f"program-state {wid} dependencies != canonical dependency-state")
+        if record["status"] in {"in_flight", "blocked"} and not record.get("currentMainRevision"):
+            fail(f"program-state {wid} missing currentMainRevision")
 
     for wid in future:
         if wid in records:
