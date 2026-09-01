@@ -2,7 +2,6 @@
   "schemaVersion": 1,
   "status": "approved",
   "sequence": [
-    "WORK-014",
     "WORK-004",
     "WORK-015",
     "WORK-005",
@@ -17,7 +16,6 @@
   ],
   "parallelWaves": [
     ["WORK-011"],
-    ["WORK-014"],
     ["WORK-004"],
     ["WORK-015"],
     ["WORK-005","WORK-007","WORK-008","WORK-009"],
@@ -26,5 +24,5 @@
     ["WORK-013"]
   ],
   "selectionRule": "Only dependency-eligible Work Orders with no uncoordinated protected-surface conflict may be activated.",
-  "rationale": "WORK-001 and WORK-002 are complete and WORK-003 is now in flight, so they are removed from the future generation. WORK-014 and WORK-015 remain positioned before their downstream consumers. Parallel waves describe eligibility only; Architect activation is still required. CI validates this future-only roadmap against the evolving Work Order lifecycle."
+  "rationale": "WORK-001, WORK-002 and WORK-003 are complete and WORK-014 is now in flight, so they are removed from the future generation. WORK-014 remains before workflow and side-effect consumers. Parallel waves describe eligibility only; Architect activation is still required. CI validates this future-only roadmap against the evolving Work Order lifecycle."
 }
