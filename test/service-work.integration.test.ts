@@ -141,7 +141,28 @@ test('live: migrations 0001+0002 apply once and re-runs are no-ops', { skip: SKI
     assert.equal(tables.rows.length, 3);
     // The work-status enumeration is closed at 'draft' (transition authority
     // is /workflow): writing any other status must fail at the schema level.
-    await assert.rejects(pool.query(`UPDATE work_service_works SET status = 'ready'`), /check constraint/);
+    // CHECK constraints only apply to rows the UPDATE touches, so a row is
+    // inserted first (minimal FK chain: user -> org -> tenant -> work).
+    await pool.query(
+      `INSERT INTO auth_users (email, kind, display_name) VALUES ('probe@x.com', 'human', 'Probe')`,
+    );
+    await pool.query(
+      `INSERT INTO org_organizations (slug, display_name) VALUES ('probe-org', 'Probe')`,
+    );
+    await pool.query(
+      `INSERT INTO org_service_tenants (organization_id, slug, display_name)
+       SELECT id, 'probe-tenant', 'Probe' FROM org_organizations WHERE slug = 'probe-org'`,
+    );
+    await pool.query(
+      `INSERT INTO work_service_works (tenant_id, work_type, title, created_by)
+       SELECT t.id, 'probe', 'Probe', u.id
+       FROM org_service_tenants t, auth_users u
+       WHERE t.slug = 'probe-tenant' AND u.email = 'probe@x.com'`,
+    );
+    await assert.rejects(
+      pool.query(`UPDATE work_service_works SET status = 'ready'`),
+      /check constraint/,
+    );
   } finally {
     await pool.end();
     await live.drop();
@@ -246,21 +267,27 @@ test('live: cross-tenant work reads are invisible (SQL tenant predicates)', { sk
   }
 });
 
+/** A module over its OWN pool (true independent-actor proof, lock #28). */
+function workOverOwnPool(app: LiveApp): { module: ReturnType<typeof createWorkModule>; pool: pg.Pool } {
+  const pool = new pg.Pool({ connectionString: app.live.dsn, max: 4 });
+  const module = createWorkModule({ executor: poolExecutor(pool), tenancy: app.organizations });
+  return { module, pool };
+}
+
 test('live: two parallel actors converge on one durable work identity', { skip: SKIP }, async () => {
   const app = await preparedLive();
+  const extraPools: pg.Pool[] = [];
   try {
     const { work, owner, colleague, tenantId, pool } = app;
-    // Two INDEPENDENT module instances over separate pools: true
-    // independent-actor proof (lock #28).
-    const executorA = poolExecutor(new pg.Pool({ connectionString: app.live.dsn, max: 4 }));
-    const workA = createWorkModule({ executor: executorA, tenancy: app.organizations });
-    const executorB = poolExecutor(new pg.Pool({ connectionString: app.live.dsn, max: 4 }));
-    const workB = createWorkModule({ executor: executorB, tenancy: app.organizations });
+    // Two INDEPENDENT module instances over separate pools.
+    const actorA = workOverOwnPool(app);
+    const actorB = workOverOwnPool(app);
+    extraPools.push(actorA.pool, actorB.pool);
 
     const key = `parallel-${Date.now()}`;
     const [a, b] = await Promise.all([
-      workA.createWork(owner, { tenantId, workType: 't', title: 'A', idempotencyKey: key }),
-      workB.createWork(colleague, { tenantId, workType: 't', title: 'B', idempotencyKey: key }),
+      actorA.module.createWork(owner, { tenantId, workType: 't', title: 'A', idempotencyKey: key }),
+      actorB.module.createWork(colleague, { tenantId, workType: 't', title: 'B', idempotencyKey: key }),
     ]);
     assert.equal(a.work.id, b.work.id);
     assert.equal((a.converged ? 1 : 0) + (b.converged ? 1 : 0), 1);
@@ -268,6 +295,10 @@ test('live: two parallel actors converge on one durable work identity', { skip: 
     assert.equal((rows.rows[0] as { n: number }).n, 1);
     void work;
   } finally {
+    // Drain the actor pools BEFORE the drop: DROP DATABASE WITH (FORCE)
+    // would otherwise terminate their idle clients and surface as
+    // unhandled pool errors.
+    await Promise.allSettled(extraPools.map((pool) => pool.end()));
     await app.pool.end();
     await app.live.drop();
   }
@@ -275,18 +306,20 @@ test('live: two parallel actors converge on one durable work identity', { skip: 
 
 test('live: parallel retries of one dispatched attempt converge on a single new attempt', { skip: SKIP }, async () => {
   const app = await preparedLive();
+  const extraPools: pg.Pool[] = [];
   try {
     const { work, owner, colleague, tenantId, pool } = app;
     const { work: created } = await work.createWork(owner, { tenantId, workType: 't', title: 'A' });
     const original = await work.createAttempt(owner, tenantId, created.id, { idempotencyKey: 'r' });
     await work.dispatchAttempt(owner, tenantId, original.attempt.id);
 
-    const workA = createWorkModule({ executor: poolExecutor(new pg.Pool({ connectionString: app.live.dsn, max: 4 })), tenancy: app.organizations });
-    const workB = createWorkModule({ executor: poolExecutor(new pg.Pool({ connectionString: app.live.dsn, max: 4 })), tenancy: app.organizations });
+    const actorA = workOverOwnPool(app);
+    const actorB = workOverOwnPool(app);
+    extraPools.push(actorA.pool, actorB.pool);
 
     const [a, b] = await Promise.all([
-      workA.createAttempt(owner, tenantId, created.id, { idempotencyKey: 'r' }),
-      workB.createAttempt(colleague, tenantId, created.id, { idempotencyKey: 'r' }),
+      actorA.module.createAttempt(owner, tenantId, created.id, { idempotencyKey: 'r' }),
+      actorB.module.createAttempt(colleague, tenantId, created.id, { idempotencyKey: 'r' }),
     ]);
     assert.equal(a.attempt.id, b.attempt.id);
     assert.notEqual(a.attempt.id, original.attempt.id);
@@ -300,6 +333,7 @@ test('live: parallel retries of one dispatched attempt converge on a single new 
     const current = await work.getWork(owner, tenantId, created.id);
     assert.equal(current.currentAttemptId, a.attempt.id);
   } finally {
+    await Promise.allSettled(extraPools.map((pool) => pool.end()));
     await app.pool.end();
     await app.live.drop();
   }
@@ -337,17 +371,19 @@ test('live: late prior attempt cannot win after supersession (FOR UPDATE seriali
 
 test('live: concurrent opposite dependency edges commit at most one', { skip: SKIP }, async () => {
   const app = await preparedLive();
+  const extraPools: pg.Pool[] = [];
   try {
     const { work, owner, colleague, tenantId, pool } = app;
     const a = await work.createWork(owner, { tenantId, workType: 't', title: 'A' });
     const b = await work.createWork(owner, { tenantId, workType: 't', title: 'B' });
 
-    const workA = createWorkModule({ executor: poolExecutor(new pg.Pool({ connectionString: app.live.dsn, max: 4 })), tenancy: app.organizations });
-    const workB = createWorkModule({ executor: poolExecutor(new pg.Pool({ connectionString: app.live.dsn, max: 4 })), tenancy: app.organizations });
+    const actorA = workOverOwnPool(app);
+    const actorB = workOverOwnPool(app);
+    extraPools.push(actorA.pool, actorB.pool);
 
     const [forward, backward] = await Promise.allSettled([
-      workA.addDependency(owner, tenantId, a.work.id, b.work.id),
-      workB.addDependency(colleague, tenantId, b.work.id, a.work.id),
+      actorA.module.addDependency(owner, tenantId, a.work.id, b.work.id),
+      actorB.module.addDependency(colleague, tenantId, b.work.id, a.work.id),
     ]);
     const rejected = [forward, backward].filter((r) => r.status === 'rejected');
     assert.equal(rejected.length, 1);
@@ -366,6 +402,7 @@ test('live: concurrent opposite dependency edges commit at most one', { skip: SK
     const total = await pool.query('SELECT COUNT(*)::int AS n FROM work_dependencies');
     assert.equal((total.rows[0] as { n: number }).n, 1);
   } finally {
+    await Promise.allSettled(extraPools.map((pool) => pool.end()));
     await app.pool.end();
     await app.live.drop();
   }
@@ -375,8 +412,12 @@ test('live: schema-level backstops hold (one live attempt per work)', { skip: SK
   const app = await preparedLive();
   try {
     const { work, owner, tenantId, pool } = app;
-    const { work: created } = await work.createWork(owner, { tenantId, workType: 't', title: 'A' });
-    const { attempt } = await work.createAttempt(owner, tenantId, created.id);
+    // A KEYED work: the tenant idempotency index applies to it.
+    const { work: created, attempt } = await (async () => {
+      const created = await work.createWork(owner, { tenantId, workType: 't', title: 'A', idempotencyKey: 'backstop-key' });
+      const attempt = await work.createAttempt(owner, tenantId, created.work.id);
+      return { work: created.work, attempt: attempt.attempt };
+    })();
     // A raw second live attempt for the same work violates the partial
     // unique index — the schema itself refuses a second current attempt.
     await assert.rejects(
