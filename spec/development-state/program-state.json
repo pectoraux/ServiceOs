@@ -44,13 +44,29 @@
         "pr": 17,
         "mergedAt": "2026-09-01"
       }
+    },
+    {
+      "id": "WORK-003",
+      "title": "Service Work",
+      "status": "in_flight",
+      "dependencies": ["WORK-001"],
+      "branch": "feat/WORK-003-service-work",
+      "pr": null,
+      "implementationRevision": null,
+      "currentMainRevision": "dbb9297c72d463c03ad8f87f29fb01d398a0f256",
+      "activationIssue": 18,
+      "assuranceProfile": "CRITICAL",
+      "surfaceFlags": ["documentation","localBehavior","moduleInternals","multiModule","publicContracts","schema","authorityBoundary","securityTenant","concurrency"],
+      "surfaces": ["/work","ServiceWork persistence","WorkAttempt persistence","dependency/idempotency records"],
+      "coordination": null,
+      "mergedAs": null
     }
   ],
   "decisions": [
     {"id":"ADR-0001","summary":"ServiceOS delegates all AI execution to Zeck."}
   ],
   "resumption": {
-    "activeHandoffs": [],
+    "activeHandoffs": ["WORK-003"],
     "rule":"A fresh Architect reads repository state before selecting work."
   }
 }
