@@ -1,6 +1,6 @@
 # WORK-009
 
-Status: planned
+Status: in_flight
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: HIGH_ASSURANCE
@@ -66,3 +66,16 @@ Forbidden:
 ## Definition Of Done
 
 See TEMPLATE.md.
+
+## Activation Record
+
+Activated by Architect on 2026-09-01.
+
+- Branch: `feat/WORK-009-service-runtime`
+- Base revision: `0a8ef8b03fd5f032d94c5f826c4a2c8e2682e68a`
+- Activation issue: `#31`
+- Implementation authority: Z.ai
+- Review/merge/finalization authority: Architect
+- Assurance profile: `HIGH_ASSURANCE`
+
+The activation decision was made from frozen v1.0 architecture with WORK-003 complete and WORK-015 now finalized in the mainline. No architecture change is authorized by this Work Order.
