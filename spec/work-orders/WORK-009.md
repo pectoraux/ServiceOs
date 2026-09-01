@@ -72,7 +72,7 @@ See TEMPLATE.md.
 Activated by Architect on 2026-09-01.
 
 - Branch: `feat/WORK-009-service-runtime`
-- Base revision: `0a8ef8b03fd5f032d94c5f826c4a2c8e2682e68a`
+- Base revision: `65d527b1aba75a025e5c5b4bf23c71bdcb32a3cf`
 - Activation issue: `#31`
 - Implementation authority: Z.ai
 - Review/merge/finalization authority: Architect

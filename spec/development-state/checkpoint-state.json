@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "active": [
-    {"workOrder":"WORK-009","activationIssue":31,"branch":"feat/WORK-009-service-runtime","baseRevision":"0a8ef8b03fd5f032d94c5f826c4a2c8e2682e68a","assuranceProfile":"HIGH_ASSURANCE"}
+    {"workOrder":"WORK-009","activationIssue":31,"branch":"feat/WORK-009-service-runtime","baseRevision":"65d527b1aba75a025e5c5b4bf23c71bdcb32a3cf","assuranceProfile":"HIGH_ASSURANCE"}
   ],
   "completed": [
     {"workOrder":"WORK-001","pr":15,"implementationRevision":"a994f24d909c6db7e0d876553e4329a071fa36b7","mergedAs":"8bf0336b25eaebed416eacb7236233149885d181","verdict":"approved","assuranceProfile":"HIGH_ASSURANCE","proofs":["static","dynamic","discrimination"],"knownLimitations":["live PostgreSQL integration tests were gated/skipped in the implementation environment"]},
