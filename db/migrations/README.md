@@ -30,13 +30,23 @@ kebab-or-underscore name), applied in ascending order.
   the notification delivery requests `notification_requests` with the
   current-interaction pointer — delivery status is derived through
   /interactions, never re-recorded; /integrations owns no durable state).
+  WORK-009 ships `0006_service_vertical_runtime.sql` (the versioned,
+  immutable-in-content vertical-package catalog `verticals_packages` with
+  declarative domain semantics and Zeck capability REQUIREMENTS without any
+  selection surface, and the service-definition/service-configuration
+  tables `services_definitions` and `services_configurations` binding a
+  pinned package version through composite foreign keys, with one-active
+  partial unique indexes, keyed idempotency and content/record hashes —
+  the customer-configuration columns exist only for policy parameter
+  values and SLA/approval TIGHTENING, so weakened content has no surface to
+  persist through).
   Later Work Orders own their own durable tables per the frozen
   architecture's authority boundaries.
 - Migration files create tables only under module-owned prefixes
   (`auth_`, `org_`, `work_`, `policy_`, `workflow_`, `interaction_`,
-  `notification_`, …); extending that allowlist belongs to the Work Order
-  owning the new module's tables (machine-enforced by
-  `checkWorkBoundaries`).
+  `notification_`, `verticals_`, `services_`, …); extending that allowlist
+  belongs to the Work Order owning the new module's tables (machine-enforced
+  by `checkWorkBoundaries`).
 - New customer-domain tables must follow the tenancy discipline established by
   migration 0001: a NOT NULL `tenant_id` referencing `org_service_tenants(id)`,
   enforced by foreign key and read only through a mandatory tenant predicate

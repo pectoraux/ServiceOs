@@ -2043,3 +2043,600 @@ export function buildExternalEffectsApp(
   });
   return { ...base, notificationsStore, notifications };
 }
+
+// ---------------------------------------------------------------------------
+// WORK-009: /verticals + /services in-memory stores and app builders
+// ---------------------------------------------------------------------------
+
+import {
+  createVerticalsModule,
+  VerticalsStoreRuleError,
+  hashPackageContent,
+  hashVerticalRecord,
+  type RegisterPackageInput,
+  type VerticalPackageRecord,
+  type VerticalsModule,
+  type VerticalsStore,
+} from '../../src/modules/verticals/index.js';
+import {
+  createServicesModule,
+  ServicesStoreMissingError,
+  ServicesStoreRuleError,
+  computeConfigurationContentHash,
+  computeConfigurationRecordHash,
+  computeDefinitionContentHash,
+  computeDefinitionRecordHash,
+  type RegisterConfigurationInput,
+  type RegisterDefinitionInput,
+  type ServiceConfigurationRecord,
+  type ServiceDefinitionRecord,
+  type ServicesModule,
+  type ServicesStore,
+  type ServiceStatus,
+} from '../../src/modules/services/index.js';
+
+type MutableVerticalPackage = Mutable<VerticalPackageRecord>;
+type MutableServiceDefinition = Mutable<ServiceDefinitionRecord>;
+type MutableServiceConfiguration = Mutable<ServiceConfigurationRecord>;
+
+export interface InMemoryVerticalsStoreOptions {
+  now?: () => Date;
+  /** Race-injection points before the synchronous critical sections. */
+  beforeRegisterPackage?: () => Promise<void>;
+}
+
+/**
+ * Faithful in-memory implementation of the /verticals store port (NOT a
+ * second persistence authority: it implements the same contract the SQL
+ * store implements, so the module's validation, versioning, convergence
+ * and tamper-detection logic are proven without a live PostgreSQL):
+ *
+ * - every read is tenant-predicated exactly like the SQL store;
+ * - `reads` counters prove denials happen before domain data access;
+ * - version sequencing, convergence and content-conflict rules run inside
+ *   ONE synchronous critical section (the semantics of the
+ *   advisory-locked SQL transaction); the async hook injects a
+ *   deterministic interleaving point BEFORE the critical section so
+ *   concurrency proofs exercise real races;
+ * - reads verify BOTH persisted hashes (content + record) exactly like
+ *   the SQL store — the package map holds mutable records so tests can
+ *   tamper deliberately and prove detection;
+ * - the same typed rule errors as the SQL store.
+ */
+export class InMemoryVerticalsStore implements VerticalsStore {
+  readonly packages = new Map<string, MutableVerticalPackage>();
+  readonly packagesByIdempotency = new Map<string, string>();
+  readonly reads = { byId: 0, byKey: 0, list: 0 };
+  /** Race-injection hook (public so concurrency tests can swap it). */
+  readonly options: InMemoryVerticalsStoreOptions;
+  private readonly now: () => Date;
+
+  constructor(options: InMemoryVerticalsStoreOptions = {}) {
+    this.options = options;
+    this.now = options.now ?? (() => new Date());
+  }
+
+  private verify(pkg: MutableVerticalPackage): VerticalPackageRecord {
+    if (hashPackageContent(pkg) !== pkg.contentHash) {
+      throw new VerticalsStoreRuleError(
+        `package ${pkg.packageId} v${pkg.version} content no longer matches its recorded content hash`,
+        'vertical-record-tampered',
+      );
+    }
+    if (hashVerticalRecord(pkg) !== pkg.recordHash) {
+      throw new VerticalsStoreRuleError(
+        `package ${pkg.packageId} v${pkg.version} record no longer matches its recorded integrity hash`,
+        'vertical-record-tampered',
+      );
+    }
+    return { ...pkg };
+  }
+
+  async registerPackage(input: RegisterPackageInput): Promise<{ pkg: VerticalPackageRecord; converged: boolean }> {
+    await this.options.beforeRegisterPackage?.();
+    // Synchronous critical section (SQL: idempotency lookup +
+    // advisory-locked sequencing + insert).
+    if (input.idempotencyKey !== null) {
+      const existingId = this.packagesByIdempotency.get(`${input.tenantId}:${input.idempotencyKey}`);
+      if (existingId !== undefined) {
+        const existing = this.packages.get(existingId);
+        if (existing !== undefined) {
+          if (existing.contentHash !== input.contentHash) {
+            throw new VerticalsStoreRuleError(
+              `vertical package idempotency key "${input.idempotencyKey}" was already bound to different content`,
+              'idempotency-input-conflict',
+            );
+          }
+          return { pkg: this.verify(existing), converged: true };
+        }
+      }
+    }
+    let max = 0;
+    for (const pkg of this.packages.values()) {
+      if (pkg.tenantId === input.tenantId && pkg.packageId === input.packageId && pkg.version > max) {
+        max = pkg.version;
+      }
+    }
+    if (input.version <= max) {
+      const twin = [...this.packages.values()].find(
+        (pkg) => pkg.tenantId === input.tenantId && pkg.packageId === input.packageId && pkg.version === input.version,
+      );
+      if (twin === undefined) {
+        throw new VerticalsStoreRuleError(
+          `vertical package ${input.packageId} version ${input.version} is behind the registered sequence (max ${max}) and missing; versions must be contiguous`,
+          'version-not-sequential',
+        );
+      }
+      if (twin.contentHash !== input.contentHash) {
+        throw new VerticalsStoreRuleError(
+          `vertical package ${input.packageId} version ${input.version} is already registered with different content`,
+          'version-content-conflict',
+        );
+      }
+      return { pkg: this.verify(twin), converged: true };
+    }
+    if (input.version !== max + 1) {
+      throw new VerticalsStoreRuleError(
+        `vertical package ${input.packageId} version ${input.version} skips the sequence (next is ${max + 1})`,
+        'version-not-sequential',
+      );
+    }
+    const id = randomUUID();
+    const pkg: MutableVerticalPackage = {
+      id,
+      tenantId: input.tenantId,
+      packageId: input.packageId,
+      version: input.version,
+      name: input.name,
+      description: input.description,
+      terminology: { ...input.terminology },
+      entities: input.entities.map((entity) => ({ ...entity })),
+      workTypes: input.workTypes.map((workType) => ({ ...workType })),
+      workflowSteps: input.workflowSteps.map((step) => ({ ...step })),
+      policyDefaults: input.policyDefaults.map((declaration) => ({ ...declaration })),
+      approvalMatrix: input.approvalMatrix.map((rule) => ({ ...rule })),
+      evidenceRequirements: input.evidenceRequirements.map((requirement) => ({ ...requirement })),
+      integrationBindings: input.integrationBindings.map((binding) => ({ ...binding })),
+      zeckCapabilityRequirements: input.zeckCapabilityRequirements.map((requirement) => ({ ...requirement })),
+      pricingRules: input.pricingRules.map((rule) => ({ ...rule })),
+      contentHash: input.contentHash,
+      recordHash: input.recordHash,
+      createdBy: input.createdBy,
+      idempotencyKey: input.idempotencyKey,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+    this.packages.set(id, pkg);
+    if (input.idempotencyKey !== null) {
+      this.packagesByIdempotency.set(`${input.tenantId}:${input.idempotencyKey}`, id);
+    }
+    return { pkg: { ...pkg }, converged: false };
+  }
+
+  async findPackageById(tenantId: string, rowId: string): Promise<VerticalPackageRecord | null> {
+    this.reads.byId += 1;
+    const pkg = this.packages.get(rowId);
+    if (pkg === undefined || pkg.tenantId !== tenantId) return null;
+    return this.verify(pkg);
+  }
+
+  async findPackage(tenantId: string, packageId: string, version: number): Promise<VerticalPackageRecord | null> {
+    this.reads.byKey += 1;
+    for (const pkg of this.packages.values()) {
+      if (pkg.tenantId === tenantId && pkg.packageId === packageId && pkg.version === version) {
+        return this.verify(pkg);
+      }
+    }
+    return null;
+  }
+
+  async listPackages(tenantId: string, packageId?: string): Promise<VerticalPackageRecord[]> {
+    this.reads.list += 1;
+    const matches = [...this.packages.values()].filter(
+      (pkg) => pkg.tenantId === tenantId && (packageId === undefined || pkg.packageId === packageId),
+    );
+    matches.sort((a, b) => (a.packageId === b.packageId ? a.version - b.version : a.packageId < b.packageId ? -1 : 1));
+    return matches.map((pkg) => this.verify(pkg));
+  }
+}
+
+export interface InMemoryServicesStoreOptions {
+  now?: () => Date;
+  /** Race-injection points before the synchronous critical sections. */
+  beforeRegisterDefinition?: () => Promise<void>;
+  beforeActivateDefinition?: () => Promise<void>;
+  beforeRegisterConfiguration?: () => Promise<void>;
+  beforeActivateConfiguration?: () => Promise<void>;
+}
+
+/**
+ * Faithful in-memory implementation of the /services store port (NOT a
+ * second persistence authority): tenant predicates, reads counters, one
+ * synchronous critical section per store operation (the semantics of the
+ * advisory-locked SQL transactions), async race-injection hooks, hash
+ * verification on reads (mutable records so tests can tamper and prove
+ * detection), forward-only one-active lifecycles with truthful record
+ * hashes, and the same typed rule/missing errors as the SQL store.
+ */
+export class InMemoryServicesStore implements ServicesStore {
+  readonly definitions = new Map<string, MutableServiceDefinition>();
+  readonly definitionsByIdempotency = new Map<string, string>();
+  readonly configurations = new Map<string, MutableServiceConfiguration>();
+  readonly configurationsByIdempotency = new Map<string, string>();
+  readonly reads = { definitionByKey: 0, definitionsList: 0, activeDefinition: 0, configurationById: 0, configurationsList: 0, activeConfiguration: 0 };
+  /** Race-injection hooks (public so concurrency tests can swap them). */
+  readonly options: InMemoryServicesStoreOptions;
+  private readonly now: () => Date;
+
+  constructor(options: InMemoryServicesStoreOptions = {}) {
+    this.options = options;
+    this.now = options.now ?? (() => new Date());
+  }
+
+  private verifyDefinition(definition: MutableServiceDefinition): ServiceDefinitionRecord {
+    if (computeDefinitionContentHash(definition) !== definition.contentHash) {
+      throw new ServicesStoreRuleError(
+        `service definition ${definition.serviceId} v${definition.version} content no longer matches its recorded content hash`,
+        'service-record-tampered',
+      );
+    }
+    if (computeDefinitionRecordHash(definition) !== definition.recordHash) {
+      throw new ServicesStoreRuleError(
+        `service definition ${definition.serviceId} v${definition.version} record no longer matches its recorded integrity hash`,
+        'service-record-tampered',
+      );
+    }
+    return { ...definition };
+  }
+
+  private verifyConfiguration(configuration: MutableServiceConfiguration): ServiceConfigurationRecord {
+    if (computeConfigurationContentHash(configuration) !== configuration.contentHash) {
+      throw new ServicesStoreRuleError(
+        `service configuration ${configuration.serviceId} #${configuration.configurationVersion} content no longer matches its recorded content hash`,
+        'configuration-record-tampered',
+      );
+    }
+    if (computeConfigurationRecordHash(configuration) !== configuration.recordHash) {
+      throw new ServicesStoreRuleError(
+        `service configuration ${configuration.serviceId} #${configuration.configurationVersion} record no longer matches its recorded integrity hash`,
+        'configuration-record-tampered',
+      );
+    }
+    return { ...configuration };
+  }
+
+  private maxDefinitionVersion(tenantId: string, serviceId: string): number {
+    let max = 0;
+    for (const definition of this.definitions.values()) {
+      if (definition.tenantId === tenantId && definition.serviceId === serviceId && definition.version > max) {
+        max = definition.version;
+      }
+    }
+    return max;
+  }
+
+  async registerDefinition(input: RegisterDefinitionInput): Promise<{ definition: ServiceDefinitionRecord; converged: boolean }> {
+    await this.options.beforeRegisterDefinition?.();
+    if (input.idempotencyKey !== null) {
+      const existingId = this.definitionsByIdempotency.get(`${input.tenantId}:${input.idempotencyKey}`);
+      if (existingId !== undefined) {
+        const existing = this.definitions.get(existingId);
+        if (existing !== undefined) {
+          if (existing.contentHash !== input.contentHash) {
+            throw new ServicesStoreRuleError(
+              `service definition idempotency key "${input.idempotencyKey}" was already bound to different content`,
+              'idempotency-input-conflict',
+            );
+          }
+          return { definition: this.verifyDefinition(existing), converged: true };
+        }
+      }
+    }
+    const max = this.maxDefinitionVersion(input.tenantId, input.serviceId);
+    if (input.version <= max) {
+      const twin = [...this.definitions.values()].find(
+        (definition) =>
+          definition.tenantId === input.tenantId &&
+          definition.serviceId === input.serviceId &&
+          definition.version === input.version,
+      );
+      if (twin === undefined) {
+        throw new ServicesStoreRuleError(
+          `service definition ${input.serviceId} version ${input.version} is behind the registered sequence (max ${max}) and missing; versions must be contiguous`,
+          'version-not-sequential',
+        );
+      }
+      if (twin.contentHash !== input.contentHash) {
+        throw new ServicesStoreRuleError(
+          `service definition ${input.serviceId} version ${input.version} is already registered with different content`,
+          'version-content-conflict',
+        );
+      }
+      return { definition: this.verifyDefinition(twin), converged: true };
+    }
+    if (input.version !== max + 1) {
+      throw new ServicesStoreRuleError(
+        `service definition ${input.serviceId} version ${input.version} skips the sequence (next is ${max + 1})`,
+        'version-not-sequential',
+      );
+    }
+    const id = randomUUID();
+    const definition: MutableServiceDefinition = {
+      id,
+      tenantId: input.tenantId,
+      serviceId: input.serviceId,
+      version: input.version,
+      status: 'draft',
+      name: input.name,
+      description: input.description,
+      verticalPackageId: input.verticalPackageId,
+      verticalPackageVersion: input.verticalPackageVersion,
+      entities: input.entities.map((entity) => ({ ...entity })),
+      workDefinitions: input.workDefinitions.map((binding) => ({ ...binding })),
+      workflowBinding: input.workflowBinding.map((binding) => ({ ...binding })),
+      policyConfiguration: input.policyConfiguration.map((declaration) => ({ ...declaration })),
+      approvalRules: input.approvalRules.map((rule) => ({ ...rule })),
+      slaDefaults: input.slaDefaults.map((entry) => ({ ...entry })),
+      outcomeContract: { ...input.outcomeContract },
+      requiredExternalCapabilities: [...input.requiredExternalCapabilities],
+      requiredAiCapabilities: input.requiredAiCapabilities.map((requirement) => ({ ...requirement })),
+      pricing: { ...input.pricing },
+      contentHash: input.contentHash,
+      recordHash: input.recordHash,
+      createdBy: input.createdBy,
+      idempotencyKey: input.idempotencyKey,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+    this.definitions.set(id, definition);
+    if (input.idempotencyKey !== null) {
+      this.definitionsByIdempotency.set(`${input.tenantId}:${input.idempotencyKey}`, id);
+    }
+    return { definition: { ...definition }, converged: false };
+  }
+
+  async findDefinition(tenantId: string, serviceId: string, version: number): Promise<ServiceDefinitionRecord | null> {
+    this.reads.definitionByKey += 1;
+    for (const definition of this.definitions.values()) {
+      if (definition.tenantId === tenantId && definition.serviceId === serviceId && definition.version === version) {
+        return this.verifyDefinition(definition);
+      }
+    }
+    return null;
+  }
+
+  async listDefinitions(tenantId: string, serviceId?: string, status?: ServiceStatus): Promise<ServiceDefinitionRecord[]> {
+    this.reads.definitionsList += 1;
+    const matches = [...this.definitions.values()].filter(
+      (definition) =>
+        definition.tenantId === tenantId &&
+        (serviceId === undefined || definition.serviceId === serviceId) &&
+        (status === undefined || definition.status === status),
+    );
+    matches.sort((a, b) =>
+      a.serviceId === b.serviceId ? a.version - b.version : a.serviceId < b.serviceId ? -1 : 1,
+    );
+    return matches.map((definition) => this.verifyDefinition(definition));
+  }
+
+  async findActiveDefinition(tenantId: string, serviceId: string): Promise<ServiceDefinitionRecord | null> {
+    this.reads.activeDefinition += 1;
+    let best: MutableServiceDefinition | null = null;
+    for (const definition of this.definitions.values()) {
+      if (
+        definition.tenantId === tenantId &&
+        definition.serviceId === serviceId &&
+        definition.status === 'active' &&
+        (best === null || definition.version > best.version)
+      ) {
+        best = definition;
+      }
+    }
+    return best === null ? null : this.verifyDefinition(best);
+  }
+
+  async activateDefinition(input: { tenantId: string; serviceId: string; version: number; now: Date }): Promise<{ definition: ServiceDefinitionRecord; converged: boolean }> {
+    await this.options.beforeActivateDefinition?.();
+    const target = [...this.definitions.values()].find(
+      (definition) =>
+        definition.tenantId === input.tenantId &&
+        definition.serviceId === input.serviceId &&
+        definition.version === input.version,
+    );
+    if (target === undefined) {
+      throw new ServicesStoreMissingError('definition', `${input.serviceId} v${input.version}`);
+    }
+    if (target.status === 'active') {
+      return { definition: this.verifyDefinition(target), converged: true };
+    }
+    if (target.status === 'retired') {
+      throw new ServicesStoreRuleError(
+        `service definition ${input.serviceId} version ${input.version} is retired and cannot be re-activated`,
+        'version-retired',
+      );
+    }
+    // Retire the currently active version FIRST; its record hash is
+    // recomputed over its new state (status/updated_at participate).
+    for (const definition of this.definitions.values()) {
+      if (definition.tenantId === input.tenantId && definition.serviceId === input.serviceId && definition.status === 'active') {
+        definition.status = 'retired';
+        definition.updatedAt = input.now;
+        definition.recordHash = computeDefinitionRecordHash(definition);
+      }
+    }
+    target.status = 'active';
+    target.updatedAt = input.now;
+    target.recordHash = computeDefinitionRecordHash(target);
+    return { definition: this.verifyDefinition(target), converged: false };
+  }
+
+  async registerConfiguration(input: RegisterConfigurationInput): Promise<{ configuration: ServiceConfigurationRecord; converged: boolean }> {
+    await this.options.beforeRegisterConfiguration?.();
+    if (input.idempotencyKey !== null) {
+      const existingId = this.configurationsByIdempotency.get(`${input.tenantId}:${input.idempotencyKey}`);
+      if (existingId !== undefined) {
+        const existing = this.configurations.get(existingId);
+        if (existing !== undefined) {
+          if (existing.contentHash !== input.contentHash) {
+            throw new ServicesStoreRuleError(
+              `service configuration idempotency key "${input.idempotencyKey}" was already bound to different content`,
+              'idempotency-input-conflict',
+            );
+          }
+          return { configuration: this.verifyConfiguration(existing), converged: true };
+        }
+      }
+    }
+    let nextConfigurationVersion = 1;
+    for (const configuration of this.configurations.values()) {
+      if (
+        configuration.tenantId === input.tenantId &&
+        configuration.serviceId === input.serviceId &&
+        configuration.configurationVersion >= nextConfigurationVersion
+      ) {
+        nextConfigurationVersion = configuration.configurationVersion + 1;
+      }
+    }
+    const id = randomUUID();
+    const configuration: MutableServiceConfiguration = {
+      id,
+      tenantId: input.tenantId,
+      serviceId: input.serviceId,
+      serviceVersion: input.serviceVersion,
+      configurationVersion: nextConfigurationVersion,
+      status: 'draft',
+      policyParameters: input.policyParameters.map((entry) => ({ policyKey: entry.policyKey, values: { ...entry.values } })),
+      slaAdjustments: input.slaAdjustments.map((adjustment) => ({ ...adjustment })),
+      approvalAdjustments: input.approvalAdjustments.map((adjustment) => ({ ...adjustment })),
+      contentHash: input.contentHash,
+      // The STORE computes the record hash over the full allocated
+      // identity (configurationVersion participates; only its allocator
+      // can hash it).
+      recordHash: '',
+      createdBy: input.createdBy,
+      idempotencyKey: input.idempotencyKey,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+    configuration.recordHash = computeConfigurationRecordHash(configuration);
+    this.configurations.set(id, configuration);
+    if (input.idempotencyKey !== null) {
+      this.configurationsByIdempotency.set(`${input.tenantId}:${input.idempotencyKey}`, id);
+    }
+    return { configuration: { ...configuration }, converged: false };
+  }
+
+  async findConfigurationById(tenantId: string, configurationId: string): Promise<ServiceConfigurationRecord | null> {
+    this.reads.configurationById += 1;
+    const configuration = this.configurations.get(configurationId);
+    if (configuration === undefined || configuration.tenantId !== tenantId) return null;
+    return this.verifyConfiguration(configuration);
+  }
+
+  async listConfigurations(tenantId: string, serviceId?: string): Promise<ServiceConfigurationRecord[]> {
+    this.reads.configurationsList += 1;
+    const matches = [...this.configurations.values()].filter(
+      (configuration) =>
+        configuration.tenantId === tenantId && (serviceId === undefined || configuration.serviceId === serviceId),
+    );
+    matches.sort((a, b) =>
+      a.serviceId === b.serviceId ? a.configurationVersion - b.configurationVersion : a.serviceId < b.serviceId ? -1 : 1,
+    );
+    return matches.map((configuration) => this.verifyConfiguration(configuration));
+  }
+
+  async activateConfiguration(input: { tenantId: string; serviceId: string; configurationVersion: number; now: Date }): Promise<{ configuration: ServiceConfigurationRecord; converged: boolean }> {
+    await this.options.beforeActivateConfiguration?.();
+    const target = [...this.configurations.values()].find(
+      (configuration) =>
+        configuration.tenantId === input.tenantId &&
+        configuration.serviceId === input.serviceId &&
+        configuration.configurationVersion === input.configurationVersion,
+    );
+    if (target === undefined) {
+      throw new ServicesStoreMissingError('configuration', `${input.serviceId} #${input.configurationVersion}`);
+    }
+    if (target.status === 'active') {
+      return { configuration: this.verifyConfiguration(target), converged: true };
+    }
+    if (target.status === 'retired') {
+      throw new ServicesStoreRuleError(
+        `service configuration ${input.serviceId} #${input.configurationVersion} is retired and cannot be re-activated`,
+        'version-retired',
+      );
+    }
+    for (const configuration of this.configurations.values()) {
+      if (
+        configuration.tenantId === input.tenantId &&
+        configuration.serviceId === input.serviceId &&
+        configuration.status === 'active'
+      ) {
+        configuration.status = 'retired';
+        configuration.updatedAt = input.now;
+        configuration.recordHash = computeConfigurationRecordHash(configuration);
+      }
+    }
+    target.status = 'active';
+    target.updatedAt = input.now;
+    target.recordHash = computeConfigurationRecordHash(target);
+    return { configuration: this.verifyConfiguration(target), converged: false };
+  }
+
+  async findActiveConfiguration(tenantId: string, serviceId: string): Promise<ServiceConfigurationRecord | null> {
+    this.reads.activeConfiguration += 1;
+    let best: MutableServiceConfiguration | null = null;
+    for (const configuration of this.configurations.values()) {
+      if (
+        configuration.tenantId === tenantId &&
+        configuration.serviceId === serviceId &&
+        configuration.status === 'active' &&
+        (best === null || configuration.configurationVersion > best.configurationVersion)
+      ) {
+        best = configuration;
+      }
+    }
+    return best === null ? null : this.verifyConfiguration(best);
+  }
+}
+
+/** The composed WORK-009 application (identity + /verticals + /services). */
+export interface ServiceRuntimeApp {
+  authStore: InMemoryAuthStore;
+  orgStore: InMemoryOrganizationsStore;
+  verticalsStore: InMemoryVerticalsStore;
+  servicesStore: InMemoryServicesStore;
+  auth: AuthModule;
+  organizations: OrganizationsModule;
+  verticals: VerticalsModule;
+  services: ServicesModule;
+}
+
+export function buildServiceRuntimeApp(
+  options: {
+    now?: () => Date;
+    verticalStoreOptions?: InMemoryVerticalsStoreOptions;
+    servicesStoreOptions?: InMemoryServicesStoreOptions;
+  } = {},
+): ServiceRuntimeApp {
+  const now = options.now ?? (() => new Date());
+  const identity = buildIdentityApp({ now });
+  const verticalsStore = new InMemoryVerticalsStore({ now, ...options.verticalStoreOptions });
+  const verticals = createVerticalsModule({ store: verticalsStore, tenancy: identity.organizations, now });
+  const servicesStore = new InMemoryServicesStore({ now, ...options.servicesStoreOptions });
+  const services = createServicesModule({
+    store: servicesStore,
+    tenancy: identity.organizations,
+    verticals,
+    now,
+  });
+  return {
+    authStore: identity.authStore,
+    orgStore: identity.orgStore,
+    verticalsStore,
+    servicesStore,
+    auth: identity.auth,
+    organizations: identity.organizations,
+    verticals,
+    services,
+  };
+}

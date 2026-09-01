@@ -95,6 +95,9 @@ export const ALLOWED_MIGRATION_TABLE_PREFIXES: readonly string[] = [
   'workflow_',
   'interaction_',
   'notification_',
+  // WORK-009 owns the service/vertical runtime tables (migration 0006).
+  'verticals_',
+  'services_',
 ];
 
 const MODULE_WORK = 'work';

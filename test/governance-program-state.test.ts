@@ -169,7 +169,11 @@ test('frontier/program in-flight set mismatch fails closed', () => {
 test('currentLiveImplementation outside the in-flight set fails closed', () => {
   const { root, cleanup } = fixtureState({
     frontierState: (frontier: any) => {
-      frontier.currentLiveImplementation = 'WORK-009';
+      // Era-independent: a synthetic id that can never be in the in-flight
+      // set (the fixture's original hard-coded future id became the live
+      // Work Order when that Work Order activated, making the mutation a
+      // no-op).
+      frontier.currentLiveImplementation = 'WORK-999';
       return frontier;
     },
   });

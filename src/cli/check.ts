@@ -26,6 +26,7 @@ import {
   checkWorkBoundaries,
   checkWorkflowBoundaries,
   checkExternalInteractionBoundaries,
+  checkServiceVerticalBoundaries,
   readProgramState,
   currentLiveWorkOrder,
   GovernanceError,
@@ -71,6 +72,7 @@ function main(): void {
     ...checkPoliciesBoundaries({ srcRoot }),
     ...checkWorkflowBoundaries({ srcRoot }),
     ...checkExternalInteractionBoundaries({ srcRoot }),
+    ...checkServiceVerticalBoundaries({ srcRoot }),
   ];
   if (violations.length > 0) {
     for (const violation of violations) {
@@ -96,6 +98,9 @@ function main(): void {
   );
   console.log(
     `interactions/integrations/notifications: single interaction, adapter, capability and notification authorities, no provider SDK imports, adapter surface contained behind /interactions (no violations)`,
+  );
+  console.log(
+    `services/verticals: single service-definition and vertical-registration authorities, no AI runtime or Zeck imports in the service catalog, verticals stay pure, services bind through public contracts (no violations)`,
   );
 
   // 3. Canonical governance state: frontier + Work Order identity (AC-4).
