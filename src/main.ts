@@ -28,6 +28,9 @@ import { createOrganizationsModule } from './modules/organizations/index.js';
 import { createWorkModule } from './modules/work/index.js';
 import { createPoliciesModule } from './modules/policies/index.js';
 import { createWorkflowModule } from './modules/workflow/index.js';
+import { createAdapterRegistry, createEffectSink } from './modules/integrations/index.js';
+import { createInteractionsModule } from './modules/interactions/index.js';
+import { createNotificationsModule } from './modules/notifications/index.js';
 
 import auth from './modules/auth/index.js';
 import organizations from './modules/organizations/index.js';
@@ -119,6 +122,42 @@ export async function main(): Promise<void> {
     policies: policiesModule,
   });
 
+  // External-effect boundary (WORK-015): the provider-neutral adapter
+  // registry. No real provider adapter ships in this Work Order — the
+  // registry composes EMPTY and SEALED, so the dispatch surface stays
+  // CLOSED (fail-closed ADAPTER_UNAVAILABLE) until the Work Order that
+  // owns provider configuration registers real adapters: "premature
+  // external effects" are impossible by construction. The contract
+  // conformance of future adapters is pinned by the /integrations test
+  // doubles (identity-idempotent dispatch, honest failures).
+  const adapterRegistry = createAdapterRegistry();
+  adapterRegistry.seal();
+  const effectSink = createEffectSink(adapterRegistry);
+
+  // External interaction authority (/interactions, WORK-015): the ONE
+  // durable business side-effect boundary (authorization -> durable
+  // intent -> dispatch -> observed result; business outcome authority
+  // decides separately). It consumes the single authorization chain and
+  // /policies' evaluation contract exactly like /work, /policies and
+  // /workflow, and holds the /integrations sink as its only provider
+  // surface. No HTTP surface (WORK-012 owns the control-plane API).
+  const interactionsModule = createInteractionsModule({
+    executor,
+    tenancy: organizationsModule,
+    policies: policiesModule,
+    sink: effectSink,
+  });
+
+  // Notification authority (/notifications, WORK-015): delivery
+  // request/status through its owned interface, consuming the interaction
+  // boundary's public contract for the external effects (no second
+  // interaction ledger, no provider surface). No HTTP surface (WORK-012).
+  const notificationsModule = createNotificationsModule({
+    executor,
+    tenancy: organizationsModule,
+    interactions: interactionsModule,
+  });
+
   const modules = registerModules(SERVICE_MODULES);
   const server = composeServer({
     modules,
@@ -150,6 +189,9 @@ export async function main(): Promise<void> {
     workAuthority: workModule !== null ? 'composed' : 'missing',
     policyAuthority: policiesModule !== null ? 'composed' : 'missing',
     workflowAuthority: workflowModule !== null ? 'composed' : 'missing',
+    interactionsAuthority: interactionsModule !== null ? 'composed' : 'missing',
+    notificationsAuthority: notificationsModule !== null ? 'composed' : 'missing',
+    registeredAdapterCapabilities: adapterRegistry.describe().length,
   });
 }
 

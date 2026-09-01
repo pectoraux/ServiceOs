@@ -21,11 +21,21 @@ kebab-or-underscore name), applied in ascending order.
   one-active-version-per-identity and tenant-scoped idempotency partial
   unique indexes, and decision-record integrity hashes — the frozen policy
   floor and the deterministic evaluator are code, not data).
+  WORK-004 ships `0004_business_workflow.sql` (the workflow transition
+  ledger and SLA deadlines, plus the sanctioned extension of migration
+  0002's closed status enumeration to the full canonical machine).
+  WORK-015 ships `0005_external_interactions.sql` (the provider-neutral
+  interaction ledger `interaction_effects` with its closed
+  intent/claim/acceptance/observation lifecycle and shape invariants, and
+  the notification delivery requests `notification_requests` with the
+  current-interaction pointer — delivery status is derived through
+  /interactions, never re-recorded; /integrations owns no durable state).
   Later Work Orders own their own durable tables per the frozen
   architecture's authority boundaries.
 - Migration files create tables only under module-owned prefixes
-  (`auth_`, `org_`, `work_`, `policy_`, …); extending that allowlist belongs
-  to the Work Order owning the new module's tables (machine-enforced by
+  (`auth_`, `org_`, `work_`, `policy_`, `workflow_`, `interaction_`,
+  `notification_`, …); extending that allowlist belongs to the Work Order
+  owning the new module's tables (machine-enforced by
   `checkWorkBoundaries`).
 - New customer-domain tables must follow the tenancy discipline established by
   migration 0001: a NOT NULL `tenant_id` referencing `org_service_tenants(id)`,

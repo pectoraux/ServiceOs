@@ -25,6 +25,7 @@ import {
   checkPoliciesBoundaries,
   checkWorkBoundaries,
   checkWorkflowBoundaries,
+  checkExternalInteractionBoundaries,
   readProgramState,
   currentLiveWorkOrder,
   GovernanceError,
@@ -69,6 +70,7 @@ function main(): void {
     ...checkWorkBoundaries({ srcRoot, migrationsDir: resolve(repoRoot, 'db/migrations') }),
     ...checkPoliciesBoundaries({ srcRoot }),
     ...checkWorkflowBoundaries({ srcRoot }),
+    ...checkExternalInteractionBoundaries({ srcRoot }),
   ];
   if (violations.length > 0) {
     for (const violation of violations) {
@@ -91,6 +93,9 @@ function main(): void {
   );
   console.log(
     `workflow: single transition authority, status writes only in /workflow, no Zeck/AI/vertical/policy engine inside (no violations)`,
+  );
+  console.log(
+    `interactions/integrations/notifications: single interaction, adapter, capability and notification authorities, no provider SDK imports, adapter surface contained behind /interactions (no violations)`,
   );
 
   // 3. Canonical governance state: frontier + Work Order identity (AC-4).

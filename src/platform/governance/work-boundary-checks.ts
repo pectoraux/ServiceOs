@@ -93,6 +93,8 @@ export const ALLOWED_MIGRATION_TABLE_PREFIXES: readonly string[] = [
   'work_',
   'policy_',
   'workflow_',
+  'interaction_',
+  'notification_',
 ];
 
 const MODULE_WORK = 'work';
