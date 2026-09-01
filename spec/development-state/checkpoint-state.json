@@ -1,14 +1,6 @@
 {
   "schemaVersion": 1,
-  "active": [
-    {
-      "workOrder": "WORK-002",
-      "activationIssue": 16,
-      "branch": "feat/WORK-002-identity-tenancy",
-      "baseRevision": "9602ee474a13e7a4b1ee8daa276a64491a183cea",
-      "assuranceProfile": "CRITICAL"
-    }
-  ],
+  "active": [],
   "completed": [
     {
       "workOrder": "WORK-001",
@@ -19,6 +11,16 @@
       "assuranceProfile": "HIGH_ASSURANCE",
       "proofs": ["static","dynamic","discrimination"],
       "knownLimitations": ["live PostgreSQL integration tests were gated/skipped in the implementation environment"]
+    },
+    {
+      "workOrder": "WORK-002",
+      "pr": 17,
+      "implementationRevision": "f23b681bb107c5666840e28120efab241e4f4cb6",
+      "mergedAs": "023a9d520f414a60cedf728db8313226a2b78e75",
+      "verdict": "approved",
+      "assuranceProfile": "CRITICAL",
+      "proofs": ["static","dynamic","discrimination","concurrency"],
+      "knownLimitations": ["live PostgreSQL proofs were not available locally but all 8 gated live proofs passed in CI"]
     }
   ],
   "rule": "Checkpoint verdicts are tied to actual implementation revisions and proof evidence. A completed Work Order remains auditable through its PR, implementation revision and merge commit. An active Work Order records its activation issue, implementation branch, base revision and assurance profile."
