@@ -54,3 +54,17 @@ export {
   WORKFLOW_FORBIDDEN_IMPORTS,
   type WorkflowBoundaryCheckOptions,
 } from './workflow-boundary-checks.js';
+export {
+  checkExternalInteractionBoundaries,
+  RESERVED_INTERACTION_AUTHORITY_EXPORTS,
+  RESERVED_ADAPTER_AUTHORITY_EXPORTS,
+  RESERVED_NOTIFICATION_AUTHORITY_EXPORTS,
+  RESERVED_AI_EXTERNAL_EXPORTS,
+  PROVIDER_SDK_PACKAGES,
+  PROVIDER_SDK_PACKAGE_PREFIXES,
+  INTEGRATIONS_IMPORTERS,
+  INTERACTIONS_IMPORTERS,
+  INTERACTIONS_ALLOWED_IMPORTS,
+  NOTIFICATIONS_ALLOWED_IMPORTS,
+  type ExternalInteractionBoundaryCheckOptions,
+} from './interactions-boundary-checks.js';

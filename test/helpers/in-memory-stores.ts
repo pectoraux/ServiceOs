@@ -65,6 +65,42 @@ import {
   type WorkRecord,
   type WorkStore,
 } from '../../src/modules/work/index.js';
+import {
+  createInteractionsModule,
+  InteractionsStoreMissingError,
+  InteractionsStoreRuleError,
+  hashObservation,
+  computeInteractionRecordHash,
+  type ClaimDispatchInput,
+  type CompleteDispatchInput,
+  type CreateInteractionInput,
+  type InteractionFilter,
+  type InteractionRecord,
+  type InteractionsModule,
+  type InteractionsStore,
+  type ReclaimDispatchInput,
+  type RecordDispatchFailureInput,
+  type RecordObservationInput,
+} from '../../src/modules/interactions/index.js';
+import {
+  createAdapterRegistry,
+  createEffectSink,
+  createInMemoryProviderAdapter,
+  type AdapterRegistry,
+  type CapabilityClass,
+  type ExternalEffectSink,
+} from '../../src/modules/integrations/index.js';
+import {
+  createNotificationsModule,
+  NotificationsStoreMissingError,
+  NotificationsStoreRuleError,
+  computeNotificationRecordHash,
+  type CreateNotificationInput,
+  type NotificationRecord,
+  type NotificationsModule,
+  type NotificationsStore,
+  type SetInteractionPointerInput,
+} from '../../src/modules/notifications/index.js';
 
 /** Internal mutable shape of a readonly record (stores keep these; reads copy). */
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
@@ -1464,4 +1500,546 @@ export function buildWorkflowApp(options: { now?: () => Date } = {}): WorkflowAp
     policies,
     workflow,
   };
+}
+
+// ---------------------------------------------------------------------------
+// In-memory /interactions store (WORK-015)
+// ---------------------------------------------------------------------------
+
+type MutableInteraction = Mutable<InteractionRecord>;
+
+export interface InMemoryInteractionsStoreOptions {
+  now?: () => Date;
+  /** Race-injection points before the synchronous critical sections. */
+  beforeCreateInteraction?: () => Promise<void>;
+  beforeClaimDispatch?: () => Promise<void>;
+  beforeCompleteDispatch?: () => Promise<void>;
+  beforeRecordDispatchFailure?: () => Promise<void>;
+  beforeRecordObservation?: () => Promise<void>;
+  /**
+   * CRASH SIMULATION: `crashAfterClaim` performs the claim mutation then
+   * throws (process death INSIDE the claim transaction's commit — the
+   * claim stands). `crashBeforeCompleteDispatch` throws BEFORE the
+   * completion mutation: the adapter already accepted the effect, the
+   * module dies between the adapter call and the durable completion
+   * write (the W3 window — state stays `dispatching`, the effect exists
+   * at the provider).
+   */
+  crashAfterClaim?: boolean;
+  crashBeforeCompleteDispatch?: boolean;
+  /** Fire the crash hooks only ONCE (the recovery call must survive). */
+  oneShotCrash?: boolean;
+}
+
+/**
+ * Faithful in-memory implementation of the /interactions store port. NOT
+ * a second persistence authority: it implements the same contract the
+ * SQL store implements, so the module's dispatch/observation protocol,
+ * claim CAS and convergence semantics are proven without a live
+ * PostgreSQL:
+ *
+ * - every read is tenant-predicated exactly like the SQL store;
+ * - `reads` counters prove denials happen before domain data access;
+ * - every mutation performs its check+mutate sequence inside ONE
+ *   synchronous critical section (the semantics of the locked SQL
+ *   transaction); async hooks inject deterministic interleaving points
+ *   BEFORE the critical section so concurrency proofs exercise real
+ *   check-then-act races; post-mutation crash hooks simulate process
+ *   death between the durable write and the module's next step;
+ * - the same typed rule/missing errors as the SQL store, with the same
+ *   state names carried in the messages;
+ * - every read recomputes the record integrity hash (tamper-evident,
+ *   exactly like the SQL store's mapInteraction).
+ */
+export class InMemoryInteractionsStore implements InteractionsStore {
+  readonly interactions = new Map<string, MutableInteraction>();
+  readonly interactionsByIdempotency = new Map<string, string>();
+  readonly reads = {
+    interactionById: 0,
+    interactionByKey: 0,
+    interactionsList: 0,
+    recoverableDispatches: 0,
+  };
+  readonly options: InMemoryInteractionsStoreOptions;
+  private readonly now: () => Date;
+  private crashed = false;
+
+  constructor(options: InMemoryInteractionsStoreOptions = {}) {
+    this.options = options;
+    this.now = options.now ?? (() => new Date());
+  }
+
+  private rehash(record: MutableInteraction): void {
+    record.recordHash = computeInteractionRecordHash(record);
+  }
+
+  private verify(record: MutableInteraction): void {
+    if (computeInteractionRecordHash(record) !== record.recordHash) {
+      throw new InteractionsStoreRuleError(
+        `interaction ${record.id} record no longer matches its integrity hash`,
+        'interaction-record-tampered',
+      );
+    }
+  }
+
+  private findRow(tenantId: string, interactionId: string): MutableInteraction | null {
+    const row = this.interactions.get(interactionId);
+    this.reads.interactionById += 1;
+    if (row === undefined || row.tenantId !== tenantId) return null;
+    this.verify(row);
+    return row;
+  }
+
+  async createInteraction(input: CreateInteractionInput): Promise<{ interaction: InteractionRecord; converged: boolean }> {
+    await this.options.beforeCreateInteraction?.();
+    // Synchronous critical section (SQL: keyed convergence lookup +
+    // retry-target validation + INSERT ON CONFLICT DO NOTHING).
+    if (input.idempotencyKey !== null) {
+      const existingId = this.interactionsByIdempotency.get(`${input.tenantId}:${input.idempotencyKey}`);
+      if (existingId !== undefined) {
+        const existing = this.interactions.get(existingId);
+        if (existing !== undefined) {
+          this.verify(existing);
+          if (existing.inputHash !== input.inputHash) {
+            throw new InteractionsStoreRuleError(
+              `idempotency key "${input.idempotencyKey}" was already used for a different interaction input`,
+              'interaction-input-conflict',
+            );
+          }
+          return { interaction: { ...existing, correlation: { ...existing.correlation } }, converged: true };
+        }
+      }
+    }
+    if (input.retryOfInteractionId !== null) {
+      const target = this.findRow(input.tenantId, input.retryOfInteractionId);
+      if (target === null) {
+        throw new InteractionsStoreMissingError(
+          `retry target ${input.retryOfInteractionId} does not exist in this tenant`,
+          'retry-target',
+        );
+      }
+      if (target.state !== 'observed' || target.observation?.outcome !== 'failed') {
+        throw new InteractionsStoreRuleError(
+          `retry target ${input.retryOfInteractionId} is not an observed failure (state ${target.state}); only failed observations are retried`,
+          'retry-target-invalid',
+        );
+      }
+    }
+    const base: Omit<InteractionRecord, 'recordHash'> = {
+      id: randomUUID(),
+      tenantId: input.tenantId,
+      capability: input.capability,
+      params: input.params,
+      correlation: input.correlation ?? {},
+      retryOfInteractionId: input.retryOfInteractionId,
+      policy: input.policy,
+      requestedBy: input.requestedBy,
+      idempotencyKey: input.idempotencyKey,
+      inputHash: input.inputHash,
+      state: 'intended',
+      claim: null,
+      dispatch: null,
+      observation: null,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+    const record: MutableInteraction = { ...base, recordHash: computeInteractionRecordHash(base) };
+    this.interactions.set(record.id, record);
+    if (input.idempotencyKey !== null) {
+      this.interactionsByIdempotency.set(`${input.tenantId}:${input.idempotencyKey}`, record.id);
+    }
+    return { interaction: { ...record, correlation: { ...record.correlation } }, converged: false };
+  }
+
+  async findInteractionById(tenantId: string, interactionId: string): Promise<InteractionRecord | null> {
+    const row = this.findRow(tenantId, interactionId);
+    return row === null ? null : { ...row, correlation: { ...row.correlation } };
+  }
+
+  async findInteractionByIdempotencyKey(tenantId: string, key: string): Promise<InteractionRecord | null> {
+    this.reads.interactionByKey += 1;
+    const id = this.interactionsByIdempotency.get(`${tenantId}:${key}`);
+    const row = id === undefined ? undefined : this.interactions.get(id);
+    if (row === undefined || row.tenantId !== tenantId) return null;
+    this.verify(row);
+    return { ...row, correlation: { ...row.correlation } };
+  }
+
+  async listInteractions(tenantId: string, filter?: InteractionFilter): Promise<InteractionRecord[]> {
+    this.reads.interactionsList += 1;
+    const rows = [...this.interactions.values()]
+      .filter((row) => row.tenantId === tenantId)
+      .filter((row) => {
+        if (filter === undefined) return true;
+        if (filter.state !== undefined && row.state !== filter.state) return false;
+        if (filter.capability !== undefined && row.capability !== filter.capability) return false;
+        if (filter.outcome !== undefined && row.observation?.outcome !== filter.outcome) return false;
+        if (filter.retryOfInteractionId !== undefined && row.retryOfInteractionId !== filter.retryOfInteractionId) return false;
+        if (filter.correlation !== undefined && row.correlation[filter.correlation.key] !== filter.correlation.value) return false;
+        return true;
+      })
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : 1));
+    for (const row of rows) this.verify(row);
+    return rows.map((row) => ({ ...row, correlation: { ...row.correlation } }));
+  }
+
+  async listRecoverableDispatches(tenantId: string): Promise<InteractionRecord[]> {
+    this.reads.recoverableDispatches += 1;
+    const rows = [...this.interactions.values()]
+      .filter((row) => row.tenantId === tenantId && row.state === 'dispatching')
+      .sort((a, b) => ((a.claim?.claimedAt ?? a.createdAt) < (b.claim?.claimedAt ?? b.createdAt) ? -1 : 1));
+    for (const row of rows) this.verify(row);
+    return rows.map((row) => ({ ...row, correlation: { ...row.correlation } }));
+  }
+
+  async claimDispatch(input: ClaimDispatchInput): Promise<InteractionRecord> {
+    await this.options.beforeClaimDispatch?.();
+    // Synchronous critical section (SQL: row FOR UPDATE + state CAS).
+    const row = this.findRow(input.tenantId, input.interactionId);
+    if (row === null) {
+      throw new InteractionsStoreMissingError(`interaction ${input.interactionId} does not exist in this tenant`, 'interaction');
+    }
+    if (row.state !== 'intended') {
+      throw new InteractionsStoreRuleError(
+        `interaction ${input.interactionId} is in state "${row.state}", not the expected "intended"`,
+        'dispatch-claim-conflict',
+      );
+    }
+    row.state = 'dispatching';
+    row.claim = { claimedBy: input.claimedBy, claimedAt: input.now };
+    row.updatedAt = input.now;
+    this.rehash(row);
+    if (this.options.crashAfterClaim === true && !(this.options.oneShotCrash === true && this.crashed)) {
+      this.crashed = true;
+      throw new Error('SIMULATED CRASH after the durable dispatch claim');
+    }
+    return { ...row, correlation: { ...row.correlation } };
+  }
+
+  async reclaimDispatch(input: ReclaimDispatchInput): Promise<InteractionRecord> {
+    // Recovery re-claim (SQL: row FOR UPDATE + claim refresh + recomputed
+    // record hash). The state STAYS dispatching.
+    const row = this.findRow(input.tenantId, input.interactionId);
+    if (row === null) {
+      throw new InteractionsStoreMissingError(`interaction ${input.interactionId} does not exist in this tenant`, 'interaction');
+    }
+    if (row.state !== 'dispatching') {
+      throw new InteractionsStoreRuleError(
+        `interaction ${input.interactionId} is in state "${row.state}", not the claimed "dispatching"`,
+        'dispatch-reclaim-conflict',
+      );
+    }
+    row.claim = { claimedBy: input.reclaimedBy, claimedAt: input.now };
+    row.updatedAt = input.now;
+    this.rehash(row);
+    return { ...row, correlation: { ...row.correlation } };
+  }
+
+  async completeDispatch(input: CompleteDispatchInput): Promise<InteractionRecord> {
+    await this.options.beforeCompleteDispatch?.();
+    if (this.options.crashBeforeCompleteDispatch === true && !(this.options.oneShotCrash === true && this.crashed)) {
+      this.crashed = true;
+      throw new Error('SIMULATED CRASH before the durable dispatch completion (adapter accepted the effect)');
+    }
+    // Synchronous critical section (SQL: row FOR UPDATE + state CAS +
+    // recomputed record hash).
+    const row = this.findRow(input.tenantId, input.interactionId);
+    if (row === null) {
+      throw new InteractionsStoreMissingError(`interaction ${input.interactionId} does not exist in this tenant`, 'interaction');
+    }
+    if (row.state !== 'dispatching') {
+      throw new InteractionsStoreRuleError(
+        `interaction ${input.interactionId} is in state "${row.state}", not the expected "dispatching"`,
+        'dispatch-completion-conflict',
+      );
+    }
+    row.state = 'dispatched';
+    row.dispatch = {
+      provider: input.provider,
+      providerReference: input.providerReference,
+      dispatchedAt: input.now,
+      dispatchedBy: input.dispatchedBy,
+    };
+    row.updatedAt = input.now;
+    this.rehash(row);
+    return { ...row, correlation: { ...row.correlation } };
+  }
+
+  async recordDispatchFailure(input: RecordDispatchFailureInput): Promise<InteractionRecord> {
+    await this.options.beforeRecordDispatchFailure?.();
+    const row = this.findRow(input.tenantId, input.interactionId);
+    if (row === null) {
+      throw new InteractionsStoreMissingError(`interaction ${input.interactionId} does not exist in this tenant`, 'interaction');
+    }
+    if (row.state !== 'dispatching') {
+      throw new InteractionsStoreRuleError(
+        `interaction ${input.interactionId} is in state "${row.state}", not the expected "dispatching"`,
+        'dispatch-completion-conflict',
+      );
+    }
+    row.state = 'observed';
+    row.observation = {
+      outcome: 'failed',
+      failureStage: 'dispatch',
+      providerObservation: { error: input.error },
+      observedBy: input.dispatchedBy,
+      observedAt: input.now,
+    };
+    row.updatedAt = input.now;
+    this.rehash(row);
+    return { ...row, correlation: { ...row.correlation } };
+  }
+
+  async recordObservation(input: RecordObservationInput): Promise<{ interaction: InteractionRecord; converged: boolean }> {
+    await this.options.beforeRecordObservation?.();
+    const row = this.findRow(input.tenantId, input.interactionId);
+    if (row === null) {
+      throw new InteractionsStoreMissingError(`interaction ${input.interactionId} does not exist in this tenant`, 'interaction');
+    }
+    if (row.state === 'observed' && row.observation !== null) {
+      const existingIdentity = hashObservation(row.observation.outcome, row.observation.providerObservation);
+      const incomingIdentity = hashObservation(input.outcome, input.providerObservation);
+      if (existingIdentity === incomingIdentity) {
+        return { interaction: { ...row, correlation: { ...row.correlation } }, converged: true };
+      }
+      throw new InteractionsStoreRuleError(
+        `interaction ${input.interactionId} already carries a different observed result (outcome ${row.observation.outcome}); duplicate interaction mutation is rejected`,
+        'observation-conflict',
+      );
+    }
+    if (row.state !== 'dispatched') {
+      throw new InteractionsStoreRuleError(
+        `interaction ${input.interactionId} is in state "${row.state}"; results are observed on dispatched interactions only`,
+        'observation-state-invalid',
+      );
+    }
+    row.state = 'observed';
+    row.observation = {
+      outcome: input.outcome,
+      failureStage: input.outcome === 'failed' ? 'provider' : null,
+      providerObservation: input.providerObservation,
+      observedBy: input.observedBy,
+      observedAt: input.now,
+    };
+    row.updatedAt = input.now;
+    this.rehash(row);
+    return { interaction: { ...row, correlation: { ...row.correlation } }, converged: false };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// In-memory /notifications store (WORK-015)
+// ---------------------------------------------------------------------------
+
+type MutableNotification = Mutable<NotificationRecord>;
+
+export interface InMemoryNotificationsStoreOptions {
+  now?: () => Date;
+  beforeCreateNotification?: () => Promise<void>;
+  beforeSetInteractionPointer?: () => Promise<void>;
+}
+
+/** Faithful in-memory implementation of the /notifications store port. */
+export class InMemoryNotificationsStore implements NotificationsStore {
+  readonly notifications = new Map<string, MutableNotification>();
+  readonly notificationsByIdempotency = new Map<string, string>();
+  readonly reads = {
+    notificationById: 0,
+    notificationByKey: 0,
+    notificationsList: 0,
+  };
+  readonly options: InMemoryNotificationsStoreOptions;
+  private readonly now: () => Date;
+
+  constructor(options: InMemoryNotificationsStoreOptions = {}) {
+    this.options = options;
+    this.now = options.now ?? (() => new Date());
+  }
+
+  private rehash(record: MutableNotification): void {
+    record.recordHash = computeNotificationRecordHash(record);
+  }
+
+  private verify(record: MutableNotification): void {
+    if (computeNotificationRecordHash(record) !== record.recordHash) {
+      throw new NotificationsStoreRuleError(
+        `notification ${record.id} record no longer matches its integrity hash`,
+        'notification-record-tampered',
+      );
+    }
+  }
+
+  async createNotification(input: CreateNotificationInput): Promise<{ notification: NotificationRecord; converged: boolean }> {
+    await this.options.beforeCreateNotification?.();
+    if (input.idempotencyKey !== null) {
+      const existingId = this.notificationsByIdempotency.get(`${input.tenantId}:${input.idempotencyKey}`);
+      if (existingId !== undefined) {
+        const existing = this.notifications.get(existingId);
+        if (existing !== undefined) {
+          this.verify(existing);
+          if (existing.inputHash !== input.inputHash) {
+            throw new NotificationsStoreRuleError(
+              `idempotency key "${input.idempotencyKey}" was already used for a different notification input`,
+              'notification-input-conflict',
+            );
+          }
+          return { notification: { ...existing, correlation: { ...existing.correlation } }, converged: true };
+        }
+      }
+    }
+    const base: Omit<NotificationRecord, 'recordHash'> = {
+      id: randomUUID(),
+      tenantId: input.tenantId,
+      channel: input.channel,
+      recipient: input.recipient,
+      content: input.content,
+      purpose: input.purpose,
+      correlation: input.correlation,
+      requestedBy: input.requestedBy,
+      idempotencyKey: input.idempotencyKey,
+      inputHash: input.inputHash,
+      currentInteractionId: null,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+    const record: MutableNotification = { ...base, recordHash: computeNotificationRecordHash(base) };
+    this.notifications.set(record.id, record);
+    if (input.idempotencyKey !== null) {
+      this.notificationsByIdempotency.set(`${input.tenantId}:${input.idempotencyKey}`, record.id);
+    }
+    return { notification: { ...record, correlation: { ...record.correlation } }, converged: false };
+  }
+
+  async findNotificationById(tenantId: string, notificationId: string): Promise<NotificationRecord | null> {
+    this.reads.notificationById += 1;
+    const row = this.notifications.get(notificationId);
+    if (row === undefined || row.tenantId !== tenantId) return null;
+    this.verify(row);
+    return { ...row, correlation: { ...row.correlation } };
+  }
+
+  async findNotificationByIdempotencyKey(tenantId: string, key: string): Promise<NotificationRecord | null> {
+    this.reads.notificationByKey += 1;
+    const id = this.notificationsByIdempotency.get(`${tenantId}:${key}`);
+    const row = id === undefined ? undefined : this.notifications.get(id);
+    if (row === undefined || row.tenantId !== tenantId) return null;
+    this.verify(row);
+    return { ...row, correlation: { ...row.correlation } };
+  }
+
+  async listNotifications(tenantId: string): Promise<NotificationRecord[]> {
+    this.reads.notificationsList += 1;
+    const rows = [...this.notifications.values()]
+      .filter((row) => row.tenantId === tenantId)
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : 1));
+    for (const row of rows) this.verify(row);
+    return rows.map((row) => ({ ...row, correlation: { ...row.correlation } }));
+  }
+
+  async setInteractionPointer(input: SetInteractionPointerInput): Promise<NotificationRecord> {
+    await this.options.beforeSetInteractionPointer?.();
+    const row = this.notifications.get(input.notificationId);
+    if (row === undefined || row.tenantId !== input.tenantId) {
+      throw new NotificationsStoreMissingError(`notification ${input.notificationId} does not exist in this tenant`);
+    }
+    this.verify(row);
+    row.currentInteractionId = input.interactionId;
+    row.updatedAt = input.now;
+    this.rehash(row);
+    return { ...row, correlation: { ...row.correlation } };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// WORK-015 app builders
+// ---------------------------------------------------------------------------
+
+/**
+ * The composed WORK-015 application over in-memory stores: identity,
+ * tenancy, policies, the /integrations registry with test-double
+ * adapters, the /interactions authority and (optionally) the
+ * /notifications authority. `sink` overrides the registry-backed sink for
+ * concurrency/discrimination hooks.
+ */
+export interface InteractionsApp {
+  authStore: InMemoryAuthStore;
+  orgStore: InMemoryOrganizationsStore;
+  policyStore: InMemoryPoliciesStore;
+  interactionsStore: InMemoryInteractionsStore;
+  registry: AdapterRegistry;
+  sink: ExternalEffectSink;
+  auth: AuthModule;
+  organizations: OrganizationsModule;
+  policies: PoliciesModule;
+  interactions: InteractionsModule;
+}
+
+export function buildInteractionsApp(
+  options: {
+    now?: () => Date;
+    capabilities?: readonly CapabilityClass[];
+    sink?: ExternalEffectSink;
+    storeOptions?: InMemoryInteractionsStoreOptions;
+  } = {},
+): InteractionsApp {
+  const now = options.now ?? (() => new Date());
+  const identity = buildIdentityApp({ now });
+  const policyStore = new InMemoryPoliciesStore({ now });
+  const policies = createPoliciesModule({ store: policyStore, tenancy: identity.organizations, now });
+  const registry = createAdapterRegistry();
+  for (const capability of options.capabilities ?? ['email', 'sms', 'voice']) {
+    const { adapter } = createInMemoryProviderAdapter(capability, { now });
+    registry.register(adapter);
+  }
+  registry.seal();
+  const sink = options.sink ?? createEffectSink(registry);
+  const interactionsStore = new InMemoryInteractionsStore({ now, ...options.storeOptions });
+  const interactions = createInteractionsModule({
+    store: interactionsStore,
+    tenancy: identity.organizations,
+    policies,
+    sink,
+    now,
+  });
+  return {
+    authStore: identity.authStore,
+    orgStore: identity.orgStore,
+    policyStore,
+    interactionsStore,
+    registry,
+    sink,
+    auth: identity.auth,
+    organizations: identity.organizations,
+    policies,
+    interactions,
+  };
+}
+
+/** The fully composed WORK-015 application including /notifications. */
+export interface ExternalEffectsApp extends InteractionsApp {
+  notificationsStore: InMemoryNotificationsStore;
+  notifications: NotificationsModule;
+}
+
+export function buildExternalEffectsApp(
+  options: {
+    now?: () => Date;
+    capabilities?: readonly CapabilityClass[];
+    sink?: ExternalEffectSink;
+    storeOptions?: InMemoryInteractionsStoreOptions;
+    notificationStoreOptions?: InMemoryNotificationsStoreOptions;
+  } = {},
+): ExternalEffectsApp {
+  const base = buildInteractionsApp(options);
+  const notificationsStore = new InMemoryNotificationsStore({
+    now: options.now ?? (() => new Date()),
+    ...options.notificationStoreOptions,
+  });
+  const notifications = createNotificationsModule({
+    store: notificationsStore,
+    tenancy: base.organizations,
+    interactions: base.interactions,
+    now: options.now ?? (() => new Date()),
+  });
+  return { ...base, notificationsStore, notifications };
 }
