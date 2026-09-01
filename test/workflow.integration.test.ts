@@ -256,9 +256,18 @@ test('live: parallel transitions from the same state — one commits, the other 
   const b = await preparedLive();
   try {
     const workId = await createDraftWork(b);
+    // Same target, distinct keyed identities: whichever interleaving the
+    // true parallelism produces, the loser fails DETERMINISTICALLY —
+    // either its snapshot predates the winner's commit (the store's
+    // locked status re-validation rejects with TRANSITION_CONFLICT) or it
+    // postdates it (the derived ready -> ready self-loop is illegal and
+    // its own key matches no durable transition, ILLEGAL_TRANSITION). A
+    // different-target loser would instead legally follow the winner
+    // (e.g. ready -> cancelled), which is the machine's legitimate
+    // sequential behavior, not a conflict.
     const submissions = await Promise.allSettled([
-      b.workflow.submitTransition(b.owner, b.tenantId, workId, { to: 'ready' }),
-      b.workflow.submitTransition(b.colleague, b.tenantId, workId, { to: 'cancelled' }),
+      b.workflow.submitTransition(b.owner, b.tenantId, workId, { to: 'ready', idempotencyKey: 'live-a' }),
+      b.workflow.submitTransition(b.colleague, b.tenantId, workId, { to: 'ready', idempotencyKey: 'live-b' }),
     ]);
     const fulfilled = submissions.filter((entry) => entry.status === 'fulfilled');
     const rejected = submissions.filter((entry) => entry.status === 'rejected');
@@ -267,12 +276,16 @@ test('live: parallel transitions from the same state — one commits, the other 
     const rejection = rejected[0];
     assert.ok(rejection !== undefined && rejection.status === 'rejected');
     assert.ok(rejection.reason instanceof WorkflowError);
-    assert.equal(rejection.reason.code, 'TRANSITION_CONFLICT');
+    assert.ok(
+      rejection.reason.code === 'TRANSITION_CONFLICT' || rejection.reason.code === 'ILLEGAL_TRANSITION',
+      `unexpected rejection code ${rejection.reason.code}`,
+    );
     // Exactly one durable ledger row; the status is the winner's target.
     const ledger = await b.workflow.listTransitions(b.owner, b.tenantId, workId);
     assert.equal(ledger.length, 1);
-    const status = (await b.work.getWork(b.owner, b.tenantId, workId)).status;
-    assert.equal(status, ledger[0]?.toState);
+    assert.equal(ledger[0]?.fromState, 'draft');
+    assert.equal(ledger[0]?.toState, 'ready');
+    assert.equal((await b.work.getWork(b.owner, b.tenantId, workId)).status, 'ready');
   } finally {
     await b.pool.end();
     await b.live.drop();
