@@ -41,3 +41,9 @@ export {
   ALLOWED_MIGRATION_TABLE_PREFIXES,
   type WorkBoundaryCheckOptions,
 } from './work-boundary-checks.js';
+export {
+  checkPoliciesBoundaries,
+  RESERVED_POLICY_AUTHORITY_EXPORTS,
+  RESERVED_AI_POLICY_EXPORTS,
+  type PoliciesBoundaryCheckOptions,
+} from './policies-boundary-checks.js';

@@ -16,11 +16,16 @@ kebab-or-underscore name), applied in ascending order.
   work idempotency keys, one live attempt per work, one live attempt per
   (work, idempotency key), and the closed `'draft'` work-status enumeration —
   /workflow, WORK-004, owns transitions and will extend that enumeration).
+  WORK-014 ships `0003_business_policy.sql` (policy contract versions and
+  policy decision records: closed scope/status/effect/outcome enumerations,
+  one-active-version-per-identity and tenant-scoped idempotency partial
+  unique indexes, and decision-record integrity hashes — the frozen policy
+  floor and the deterministic evaluator are code, not data).
   Later Work Orders own their own durable tables per the frozen
   architecture's authority boundaries.
 - Migration files create tables only under module-owned prefixes
-  (`auth_`, `org_`, `work_`, …); extending that allowlist belongs to the Work
-  Order owning the new module's tables (machine-enforced by
+  (`auth_`, `org_`, `work_`, `policy_`, …); extending that allowlist belongs
+  to the Work Order owning the new module's tables (machine-enforced by
   `checkWorkBoundaries`).
 - New customer-domain tables must follow the tenancy discipline established by
   migration 0001: a NOT NULL `tenant_id` referencing `org_service_tenants(id)`,

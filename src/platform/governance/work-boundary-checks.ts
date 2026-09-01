@@ -81,8 +81,12 @@ export const RESERVED_ZECK_LIFECYCLE_EXPORTS: readonly string[] = [
   'zeckExecutionStateMachine',
 ];
 
-/** Module-owned table prefixes allowed in migration files. */
-export const ALLOWED_MIGRATION_TABLE_PREFIXES: readonly string[] = ['auth_', 'org_', 'work_'];
+/**
+ * Module-owned table prefixes allowed in migration files. `policy_` was
+ * added by WORK-014, which owns the /policies tables (the deliberate,
+ * reviewed extension point of this allowlist).
+ */
+export const ALLOWED_MIGRATION_TABLE_PREFIXES: readonly string[] = ['auth_', 'org_', 'work_', 'policy_'];
 
 const MODULE_WORK = 'work';
 

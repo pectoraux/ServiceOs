@@ -26,6 +26,7 @@ import { composeServer } from './platform/http/index.js';
 import { createAuthModule } from './modules/auth/index.js';
 import { createOrganizationsModule } from './modules/organizations/index.js';
 import { createWorkModule } from './modules/work/index.js';
+import { createPoliciesModule } from './modules/policies/index.js';
 
 import auth from './modules/auth/index.js';
 import organizations from './modules/organizations/index.js';
@@ -93,6 +94,15 @@ export async function main(): Promise<void> {
   // owned by WORK-012.
   const workModule = createWorkModule({ executor, tenancy: organizationsModule });
 
+  // Business-policy authority (/policies, WORK-014): consumes the single
+  // authorization chain from /organizations' public interface exactly like
+  // /work (authorization stays separate from business policy). The
+  // deterministic evaluation hooks (resolvePolicy / evaluatePolicy) are the
+  // public policy contract the future workflow authority (WORK-004) and
+  // side-effect authorities (WORK-008) consume; /policies owns no HTTP
+  // surface (WORK-012 owns the control-plane API).
+  const policiesModule = createPoliciesModule({ executor, tenancy: organizationsModule });
+
   const modules = registerModules(SERVICE_MODULES);
   const server = composeServer({
     modules,
@@ -122,6 +132,7 @@ export async function main(): Promise<void> {
     customerRoutes: [...authModule.routes(), ...organizationsModule.routes()].length,
     persistenceConfigured: persistence.isConfigured(),
     workAuthority: workModule !== null ? 'composed' : 'missing',
+    policyAuthority: policiesModule !== null ? 'composed' : 'missing',
   });
 }
 

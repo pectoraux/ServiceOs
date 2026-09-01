@@ -18,7 +18,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { checkWorkBoundaries, extractCreatedTables } from '../src/platform/governance/work-boundary-checks.js';
 import { makeTempTree, moduleFile } from './helpers/tree.js';
@@ -221,14 +221,19 @@ test('check CLI wiring: the real repository passes end-to-end (static)', () => {
   // The check CLI (npm run check) composes checkWorkBoundaries with the
   // architecture and identity checks; running it here proves the wiring
   // end-to-end. It exits non-zero on any violation. (Minimal env, mirroring
-  // the WORK-001 check-CLI proof.)
+  // the WORK-001 check-CLI proof; era-relative branch from program state.)
+  const program = JSON.parse(
+    readFileSync(join(process.cwd(), 'spec/development-state/program-state.json'), 'utf8'),
+  ) as { workOrders: { id: string; status: string; branch: string }[] };
+  const live = program.workOrders.find((entry) => entry.status === 'in_flight');
+  assert.ok(live, 'expected an in-flight Work Order in canonical state');
   const result = spawnSync(process.execPath, [resolve(process.cwd(), 'dist/src/cli/check.js')], {
     cwd: process.cwd(),
     encoding: 'utf8',
     env: {
       PATH: process.env.PATH ?? '',
       HOME: process.env.HOME ?? '',
-      EXPECT_BRANCH: 'feat/WORK-003-service-work',
+      EXPECT_BRANCH: live.branch,
     },
   });
   assert.equal(result.status, 0, `stdout:\n${result.stdout ?? ''}\nstderr:\n${result.stderr ?? ''}`);

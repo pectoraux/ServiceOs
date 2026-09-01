@@ -783,3 +783,321 @@ export function buildServiceWorkApp(options: { now?: () => Date } = {}): Service
     work,
   };
 }
+
+// ---------------------------------------------------------------------------
+// In-memory policies store (WORK-014)
+// ---------------------------------------------------------------------------
+
+import {
+  createPoliciesModule,
+  PolicyStoreMissingError,
+  PolicyStoreRuleError,
+  type ActivatePolicyVersionInput,
+  type CreatePolicyVersionInput,
+  type PoliciesModule,
+  type PolicyContractRecord,
+  type PolicyDecisionRecord,
+  type PolicyScope,
+  type PolicyStore,
+  type RecordDecisionInput,
+} from '../../src/modules/policies/index.js';
+import { canonicalJson } from '../../src/modules/policies/evaluation.js';
+import { createHash } from 'node:crypto';
+
+export interface InMemoryPoliciesStoreOptions {
+  now?: () => Date;
+  /** Race-injection points before the synchronous critical sections. */
+  beforeCreatePolicyVersion?: () => Promise<void>;
+  beforeActivatePolicyVersion?: () => Promise<void>;
+  beforeRecordDecision?: () => Promise<void>;
+}
+
+type MutableContract = Mutable<PolicyContractRecord>;
+type MutableDecision = Mutable<PolicyDecisionRecord>;
+
+/**
+ * Faithful in-memory implementation of the /policies store port. NOT a
+ * second persistence authority: it implements the same contract the SQL
+ * store implements, so the module's resolution/composition logic and the
+ * versioning/idempotency protocol are proven without a live PostgreSQL:
+ *
+ * - every read is tenant-predicated exactly like the SQL store;
+ * - `reads` counters prove denials happen before domain data access;
+ * - version numbering, activation retirement ordering and decision
+ *   convergence run inside ONE synchronous critical section (the semantics
+ *   of the locked SQL transaction); async hooks inject deterministic
+ *   interleaving points BEFORE the critical section so concurrency proofs
+ *   exercise real races;
+ * - decision reads verify the input hash and record hash exactly like the
+ *   SQL store (tamper detection) — the decision map holds mutable records
+ *   so tests can tamper deliberately and prove detection;
+ * - the same typed rule/missing errors as the SQL store.
+ */
+export class InMemoryPoliciesStore implements PolicyStore {
+  readonly contracts = new Map<string, MutableContract>();
+  readonly contractsByIdempotency = new Map<string, string>();
+  readonly decisions = new Map<string, MutableDecision>();
+  readonly decisionsByIdempotency = new Map<string, string>();
+  readonly reads = {
+    contractById: 0,
+    contractsList: 0,
+    activeLookup: 0,
+    decisionById: 0,
+    decisionByIdempotency: 0,
+  };
+  /** Race-injection hooks (public so concurrency tests can swap them). */
+  readonly options: InMemoryPoliciesStoreOptions;
+  private readonly now: () => Date;
+
+  constructor(options: InMemoryPoliciesStoreOptions = {}) {
+    this.options = options;
+    this.now = options.now ?? (() => new Date());
+  }
+
+  private inputHash(input: { action: string; attributes: Readonly<Record<string, unknown>> }): string {
+    return createHash('sha256').update(canonicalJson(input)).digest('hex');
+  }
+
+  private recordHash(decision: PolicyDecisionRecord): string {
+    return createHash('sha256')
+      .update(
+        canonicalJson({
+          tenantId: decision.tenantId,
+          policyKey: decision.policyKey,
+          outcome: decision.outcome,
+          decidingLayer: decision.decidingLayer,
+          decidingRuleId: decision.decidingRuleId,
+          frozenRevision: decision.frozenRevision,
+          layers: decision.layers,
+          input: decision.input,
+          inputHash: decision.inputHash,
+          decidedBy: decision.decidedBy,
+          createdAt: decision.createdAt.toISOString(),
+        }),
+      )
+      .digest('hex');
+  }
+
+  /** Integrity verification mirroring the SQL store's read path. */
+  private verifyDecision(decision: MutableDecision): PolicyDecisionRecord {
+    if (this.inputHash(decision.input) !== decision.inputHash) {
+      throw new PolicyStoreRuleError(
+        `policy decision ${decision.id} input no longer matches its recorded input hash`,
+        'decision-record-tampered',
+      );
+    }
+    if (this.recordHash(decision) !== decision.recordHash) {
+      throw new PolicyStoreRuleError(
+        `policy decision ${decision.id} record no longer matches its recorded integrity hash`,
+        'decision-record-tampered',
+      );
+    }
+    return { ...decision, layers: decision.layers.map((layer) => ({ ...layer })) };
+  }
+
+  async createPolicyVersion(input: CreatePolicyVersionInput): Promise<{ contract: PolicyContractRecord; converged: boolean }> {
+    await this.options.beforeCreatePolicyVersion?.();
+    // Synchronous critical section (SQL: idempotency lookup + advisory-locked
+    // version numbering + insert).
+    if (input.idempotencyKey !== null) {
+      const existingId = this.contractsByIdempotency.get(`${input.tenantId}:${input.idempotencyKey}`);
+      if (existingId !== undefined) {
+        const existing = this.contracts.get(existingId);
+        if (existing !== undefined) return { contract: { ...existing }, converged: true };
+      }
+    }
+    let version = 1;
+    for (const contract of this.contracts.values()) {
+      if (
+        contract.tenantId === input.tenantId &&
+        contract.policyKey === input.policyKey &&
+        contract.scope === input.scope &&
+        contract.version >= version
+      ) {
+        version = contract.version + 1;
+      }
+    }
+    const id = randomUUID();
+    const contract: MutableContract = {
+      id,
+      tenantId: input.tenantId,
+      policyKey: input.policyKey,
+      scope: input.scope,
+      version,
+      status: 'draft',
+      rules: input.rules.map((rule) => ({ ...rule, when: rule.when })),
+      defaultEffect: input.defaultEffect,
+      createdBy: input.createdBy,
+      idempotencyKey: input.idempotencyKey,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+    this.contracts.set(id, contract);
+    if (input.idempotencyKey !== null) {
+      this.contractsByIdempotency.set(`${input.tenantId}:${input.idempotencyKey}`, id);
+    }
+    return { contract: { ...contract }, converged: false };
+  }
+
+  async findPolicyVersionById(tenantId: string, versionId: string): Promise<PolicyContractRecord | null> {
+    this.reads.contractById += 1;
+    const contract = this.contracts.get(versionId);
+    if (contract === undefined || contract.tenantId !== tenantId) return null;
+    return { ...contract, rules: contract.rules.map((rule) => ({ ...rule })) };
+  }
+
+  async listPolicyVersions(tenantId: string, policyKey: string, scope?: PolicyScope): Promise<PolicyContractRecord[]> {
+    this.reads.contractsList += 1;
+    const matches: MutableContract[] = [];
+    for (const contract of this.contracts.values()) {
+      if (
+        contract.tenantId === tenantId &&
+        contract.policyKey === policyKey &&
+        (scope === undefined || contract.scope === scope)
+      ) {
+        matches.push(contract);
+      }
+    }
+    matches.sort((a, b) => a.version - b.version);
+    return matches.map((contract) => ({ ...contract, rules: contract.rules.map((rule) => ({ ...rule })) }));
+  }
+
+  async findActivePolicyVersion(tenantId: string, policyKey: string, scope: PolicyScope): Promise<PolicyContractRecord | null> {
+    this.reads.activeLookup += 1;
+    let active: MutableContract | null = null;
+    for (const contract of this.contracts.values()) {
+      if (
+        contract.tenantId === tenantId &&
+        contract.policyKey === policyKey &&
+        contract.scope === scope &&
+        contract.status === 'active' &&
+        (active === null || contract.version > active.version)
+      ) {
+        active = contract;
+      }
+    }
+    return active === null ? null : { ...active, rules: active.rules.map((rule) => ({ ...rule })) };
+  }
+
+  async activatePolicyVersion(input: ActivatePolicyVersionInput): Promise<{ contract: PolicyContractRecord; converged: boolean }> {
+    await this.options.beforeActivatePolicyVersion?.();
+    // Synchronous critical section (SQL: SELECT ... FOR UPDATE, retire
+    // prior active first, then activate — the partial unique index is
+    // per-statement, so ordering matters exactly like the SQL store).
+    const contract = this.contracts.get(input.versionId);
+    if (contract === undefined || contract.tenantId !== input.tenantId) {
+      throw new PolicyStoreMissingError(
+        `policy version ${input.versionId} does not exist in this tenant`,
+        'policy-version',
+      );
+    }
+    if (contract.status === 'active') {
+      return { contract: { ...contract }, converged: true };
+    }
+    if (contract.status === 'retired') {
+      throw new PolicyStoreRuleError(
+        `policy version ${input.versionId} is retired and cannot be re-activated`,
+        'version-retired',
+      );
+    }
+    for (const other of this.contracts.values()) {
+      if (
+        other.tenantId === contract.tenantId &&
+        other.policyKey === contract.policyKey &&
+        other.scope === contract.scope &&
+        other.status === 'active'
+      ) {
+        other.status = 'retired';
+        other.updatedAt = input.now;
+      }
+    }
+    contract.status = 'active';
+    contract.updatedAt = input.now;
+    return { contract: { ...contract }, converged: false };
+  }
+
+  async recordDecision(input: RecordDecisionInput): Promise<{ decision: PolicyDecisionRecord; converged: boolean }> {
+    await this.options.beforeRecordDecision?.();
+    // Synchronous critical section (SQL: idempotency lookup with input-hash
+    // conflict check, then insert against the partial unique index).
+    if (input.idempotencyKey !== null) {
+      const existingId = this.decisionsByIdempotency.get(`${input.tenantId}:${input.idempotencyKey}`);
+      if (existingId !== undefined) {
+        const existing = this.decisions.get(existingId);
+        if (existing !== undefined) {
+          if (existing.inputHash !== input.inputHash) {
+            throw new PolicyStoreRuleError(
+              `decision idempotency key "${input.idempotencyKey}" was already bound to a different input`,
+              'decision-input-conflict',
+            );
+          }
+          return { decision: this.verifyDecision(existing), converged: true };
+        }
+      }
+    }
+    const id = randomUUID();
+    const decision: MutableDecision = {
+      id,
+      tenantId: input.tenantId,
+      policyKey: input.policyKey,
+      outcome: input.outcome,
+      decidingLayer: input.decidingLayer,
+      decidingRuleId: input.decidingRuleId,
+      frozenRevision: input.frozenRevision,
+      layers: input.layers.map((layer) => ({ ...layer })),
+      input: { action: input.input.action, attributes: { ...input.input.attributes } },
+      inputHash: input.inputHash,
+      recordHash: input.recordHash,
+      decidedBy: input.decidedBy,
+      idempotencyKey: input.idempotencyKey,
+      createdAt: input.now,
+    };
+    this.decisions.set(id, decision);
+    if (input.idempotencyKey !== null) {
+      this.decisionsByIdempotency.set(`${input.tenantId}:${input.idempotencyKey}`, id);
+    }
+    return { decision: this.verifyDecision(decision), converged: false };
+  }
+
+  async findDecisionById(tenantId: string, decisionId: string): Promise<PolicyDecisionRecord | null> {
+    this.reads.decisionById += 1;
+    const decision = this.decisions.get(decisionId);
+    if (decision === undefined || decision.tenantId !== tenantId) return null;
+    // mapDecision-equivalent integrity verification (tamper detection).
+    return this.verifyDecision(decision);
+  }
+
+  async findDecisionByIdempotencyKey(tenantId: string, idempotencyKey: string): Promise<PolicyDecisionRecord | null> {
+    this.reads.decisionByIdempotency += 1;
+    const id = this.decisionsByIdempotency.get(`${tenantId}:${idempotencyKey}`);
+    if (id === undefined) return null;
+    const decision = this.decisions.get(id);
+    if (decision === undefined || decision.tenantId !== tenantId) return null;
+    return this.verifyDecision(decision);
+  }
+}
+
+export interface PoliciesApp {
+  authStore: InMemoryAuthStore;
+  orgStore: InMemoryOrganizationsStore;
+  policyStore: InMemoryPoliciesStore;
+  auth: AuthModule;
+  organizations: OrganizationsModule;
+  policies: PoliciesModule;
+}
+
+/** Build the composed identity/tenancy/policies modules over in-memory stores. */
+export function buildPoliciesApp(options: { now?: () => Date } = {}): PoliciesApp {
+  const now = options.now ?? (() => new Date());
+  const identity = buildIdentityApp({ now });
+  const policyStore = new InMemoryPoliciesStore({ now });
+  const policies = createPoliciesModule({ store: policyStore, tenancy: identity.organizations, now });
+  return {
+    authStore: identity.authStore,
+    orgStore: identity.orgStore,
+    policyStore,
+    auth: identity.auth,
+    organizations: identity.organizations,
+    policies,
+  };
+}
