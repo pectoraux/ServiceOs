@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "currentGeneration": {
-    "complete": ["WORK-001"],
-    "inFlight": ["WORK-002"]
+    "complete": ["WORK-001","WORK-002"],
+    "inFlight": []
   },
   "futureGeneration": {
     "WORK-003": ["WORK-001"],
