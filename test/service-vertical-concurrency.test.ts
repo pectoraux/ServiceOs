@@ -14,6 +14,11 @@
  * - two actors registering the same package version with DIVERGENT
  *   content: exactly one wins, the loser fails closed with
  *   VERSION_CONTENT_CONFLICT (deterministic rejection);
+ * - two actors racing the SAME idempotency key with divergent package or
+ *   definition content: exactly one wins, the loser fails closed with
+ *   IDEMPOTENCY_INPUT_CONFLICT (the serialized critical section's
+ *   contract — the key is the logical identity; the SQL stores' post-lock
+ *   re-check upholds the same code over real races);
  * - two actors racing to register the NEXT version of a package: one
  *   registers, the other converges (same content) or fails (divergent);
  * - two actors registering the same logical service definition
@@ -95,14 +100,8 @@ function packageInput(tenantId: string, version: number, name = 'Construction', 
   };
 }
 
-async function registerService(
-  app: ServiceRuntimeApp,
-  actor: Principal,
-  tenantId: string,
-  version: number,
-  idempotencyKey: string,
-) {
-  return app.services.registerServiceDefinition(actor, {
+function serviceDefinitionInput(tenantId: string, version: number, idempotencyKey: string) {
+  return {
     tenantId,
     serviceId: 'subcontractor-compliance',
     version,
@@ -126,7 +125,17 @@ async function registerService(
     requiredAiCapabilities: [{ capability: 'document.reasoning' }],
     pricing: { model: 'per_work_item' as const, metering: [] },
     idempotencyKey,
-  });
+  };
+}
+
+async function registerService(
+  app: ServiceRuntimeApp,
+  actor: Principal,
+  tenantId: string,
+  version: number,
+  idempotencyKey: string,
+) {
+  return app.services.registerServiceDefinition(actor, serviceDefinitionInput(tenantId, version, idempotencyKey));
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +186,36 @@ test('two actors registering the same package version with divergent content: on
   assert.equal(app.verticalsStore.packages.size, 1, 'never two rows for one identity');
 });
 
+test('two actors racing the SAME idempotency key with divergent package content: the loser fails closed with IDEMPOTENCY_INPUT_CONFLICT', async () => {
+  let release = 0;
+  const race = async () => {
+    if (release === 0) {
+      release = 1;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
+  const { app, owner, colleague, tenantId } = await base(race);
+  const [a, b] = await Promise.all([
+    capture(app.verticals.registerVerticalPackage(owner, packageInput(tenantId, 1, 'Construction', 'same-key'))),
+    capture(app.verticals.registerVerticalPackage(colleague, packageInput(tenantId, 1, 'Construction v2', 'same-key'))),
+  ]);
+  const results = [a, b];
+  assert.equal(results.filter((result) => result.ok).length, 1, 'exactly one winner');
+  const losers = results.filter((result) => !result.ok);
+  assert.equal(losers.length, 1, 'exactly one loser');
+  const loser = losers[0];
+  if (!loser.ok) {
+    assert.ok(loser.error instanceof VerticalsError, `typed error, got ${String(loser.error)}`);
+    // The store contract: same (tenant, idempotency key) + divergent
+    // content fails closed with idempotency-input-conflict inside the
+    // serialized critical section — the durable idempotency key is the
+    // logical identity, NOT the (package, version) slot (the SQL store's
+    // post-lock re-check upholds the same code under a true race).
+    assert.equal(loser.error.code, 'IDEMPOTENCY_INPUT_CONFLICT');
+  }
+  assert.equal(app.verticalsStore.packages.size, 1, 'never two rows for one identity');
+});
+
 test('racing the NEXT package version: one registers, the other converges (identical content)', async () => {
   const { app, owner, colleague, tenantId } = await base();
   await app.verticals.registerVerticalPackage(owner, packageInput(tenantId, 1, 'Construction', 'key-v1'));
@@ -219,6 +258,41 @@ test('two actors registering the same logical service definition converge on one
   assert.notEqual(a.converged, b.converged, 'exactly one insert and one convergence');
   assert.equal(a.definition.id, b.definition.id);
   assert.equal(app.servicesStore.definitions.size, 1);
+});
+
+test('two actors racing the SAME idempotency key with divergent definition content: the loser fails closed with IDEMPOTENCY_INPUT_CONFLICT', async () => {
+  let release = 0;
+  const race = async () => {
+    if (release === 0) {
+      release = 1;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
+  const { app, owner, colleague, tenantId } = await base(race);
+  await app.verticals.registerVerticalPackage(owner, packageInput(tenantId, 1, 'Construction', 'pkg-v1'));
+  const [a, b] = await Promise.all([
+    capture(registerService(app, owner, tenantId, 1, 'svc-divergent')),
+    capture(
+      app.services.registerServiceDefinition(colleague, {
+        ...serviceDefinitionInput(tenantId, 1, 'svc-divergent'),
+        name: 'Divergent Service B',
+      }),
+    ),
+  ]);
+  const results = [a, b];
+  assert.equal(results.filter((result) => result.ok).length, 1, 'exactly one winner');
+  const losers = results.filter((result) => !result.ok);
+  assert.equal(losers.length, 1, 'exactly one loser');
+  const loser = losers[0];
+  if (!loser.ok) {
+    assert.ok(loser.error instanceof ServicesError, `typed error, got ${String(loser.error)}`);
+    // The store contract: same (tenant, idempotency key) + divergent
+    // content fails closed with idempotency-input-conflict inside the
+    // serialized critical section (the SQL store's post-lock re-check
+    // upholds the same code under a true race — the live proof pins it).
+    assert.equal(loser.error.code, 'IDEMPOTENCY_INPUT_CONFLICT');
+  }
+  assert.equal(app.servicesStore.definitions.size, 1, 'never two rows for one identity');
 });
 
 test('concurrent activations of the SAME definition version converge (one active at rest)', async () => {

@@ -512,6 +512,28 @@ export function createSqlServicesStore(executor: TransactionalExecutor): Service
         await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
           `services-definition:${input.tenantId}:${input.serviceId}`,
         ]);
+        // POST-LOCK IDEMPOTENCY RE-CHECK (the authoritative one): the
+        // pre-lock lookup above is only a fast path for registrations that
+        // had ALREADY committed. A racing same-key registration may have
+        // committed while this transaction waited for the advisory lock —
+        // invisible to the pre-lock statement snapshot, decisive here
+        // (READ COMMITTED takes a fresh snapshot per statement). Without
+        // this re-check a same-key divergent loser would exit through the
+        // version-sequence branch with `version-content-conflict`,
+        // violating the store contract's `idempotency-input-conflict` for
+        // same-key divergence inside the serialized critical section.
+        if (input.idempotencyKey !== null) {
+          const raced = await findDefinitionRowByIdempotencyKey(tx, input.tenantId, input.idempotencyKey);
+          if (raced !== null) {
+            if (raced.content_hash !== input.contentHash) {
+              throw new ServicesStoreRuleError(
+                `service definition idempotency key "${input.idempotencyKey}" was already bound to different content`,
+                'idempotency-input-conflict',
+              );
+            }
+            return { definition: mapDefinition(raced), converged: true };
+          }
+        }
         const sequence = await tx.query(
           `SELECT COALESCE(MAX(version), 0) AS max FROM services_definitions WHERE tenant_id = $1 AND service_id = $2`,
           [input.tenantId, input.serviceId],
@@ -749,6 +771,26 @@ export function createSqlServicesStore(executor: TransactionalExecutor): Service
         await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
           `services-configuration:${input.tenantId}:${input.serviceId}`,
         ]);
+        // POST-LOCK IDEMPOTENCY RE-CHECK: the insert-conflict convergence
+        // path below would also yield the contract's typed outcomes for a
+        // racing same-key registration, but only after allocating a dead
+        // configuration version; re-checking by key under the lock keeps
+        // the serialized critical section's semantics uniform with
+        // registerDefinition/registerPackage (same key + same content
+        // converges; same key + divergent content fails closed with
+        // `idempotency-input-conflict`).
+        if (input.idempotencyKey !== null) {
+          const raced = await findConfigurationRowByIdempotencyKey(tx, input.tenantId, input.idempotencyKey);
+          if (raced !== null) {
+            if (raced.content_hash !== input.contentHash) {
+              throw new ServicesStoreRuleError(
+                `service configuration idempotency key "${input.idempotencyKey}" was already bound to different content`,
+                'idempotency-input-conflict',
+              );
+            }
+            return { configuration: mapConfiguration(raced), converged: true };
+          }
+        }
         const sequence = await tx.query(
           `SELECT COALESCE(MAX(configuration_version), 0) + 1 AS next FROM services_configurations WHERE tenant_id = $1 AND service_id = $2`,
           [input.tenantId, input.serviceId],

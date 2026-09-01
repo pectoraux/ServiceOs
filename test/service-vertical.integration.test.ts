@@ -440,16 +440,26 @@ test('TRUE parallel actors converge over real SQL (independent pooled clients)',
       const svcRows = await app.pool.query(`SELECT COUNT(*)::int AS n FROM services_definitions WHERE tenant_id = $1`, [app.tenantId]);
       assert.equal((svcRows.rows[0] as { n: number }).n, 1);
 
-      // Divergent content for the same idempotency key: exactly one fails.
+      // Divergent content for the same FRESH idempotency key, racing in
+      // parallel: exactly one wins; the loser fails closed with the store
+      // contract's IDEMPOTENCY_INPUT_CONFLICT (the post-lock re-check —
+      // NOT version-content-conflict — after waiting on the advisory
+      // lock). Version 2 is the next free sequence slot (v1 was bound by
+      // the convergent race above).
       const [divA, divB] = await Promise.allSettled([
-        servicesA.registerServiceDefinition(colleagueA, { ...serviceInput(app.tenantId, 1, 'svc-race'), name: 'Divergent A' }),
-        app.services.registerServiceDefinition(app.owner, { ...serviceInput(app.tenantId, 1, 'svc-race'), name: 'Divergent B' }),
+        servicesA.registerServiceDefinition(colleagueA, { ...serviceInput(app.tenantId, 2, 'svc-divergent'), name: 'Divergent A' }),
+        app.services.registerServiceDefinition(app.owner, { ...serviceInput(app.tenantId, 2, 'svc-divergent'), name: 'Divergent B' }),
       ]);
       const failed = [divA, divB].filter((result) => result.status === 'rejected');
       assert.equal(failed.length, 1, 'exactly one rejection');
       if (failed[0]?.status === 'rejected') {
         await expectCode(failed[0].reason, 'IDEMPOTENCY_INPUT_CONFLICT');
       }
+      const divergentRows = await app.pool.query(
+        `SELECT COUNT(*)::int AS n FROM services_definitions WHERE tenant_id = $1 AND version = 2`,
+        [app.tenantId],
+      );
+      assert.equal((divergentRows.rows[0] as { n: number }).n, 1, 'the winner\'s version 2 is the only durable row');
 
       // Concurrent activation of the same version converges (one active).
       const [actA, actB] = await Promise.all([

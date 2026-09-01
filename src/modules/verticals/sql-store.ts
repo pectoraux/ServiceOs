@@ -356,6 +356,28 @@ export function createSqlVerticalsStore(executor: TransactionalExecutor): Vertic
         await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
           `verticals:${input.tenantId}:${input.packageId}`,
         ]);
+        // POST-LOCK IDEMPOTENCY RE-CHECK (the authoritative one): the
+        // pre-lock lookup above is only a fast path for registrations that
+        // had ALREADY committed. A racing same-key registration may have
+        // committed while this transaction waited for the advisory lock —
+        // invisible to the pre-lock statement snapshot, decisive here
+        // (READ COMMITTED takes a fresh snapshot per statement). Without
+        // this re-check a same-key divergent loser would exit through the
+        // version-sequence branch with `version-content-conflict`,
+        // violating the store contract's `idempotency-input-conflict` for
+        // same-key divergence inside the serialized critical section.
+        if (input.idempotencyKey !== null) {
+          const raced = await findRowByIdempotencyKey(tx, input.tenantId, input.idempotencyKey);
+          if (raced !== null) {
+            if (raced.content_hash !== input.contentHash) {
+              throw new VerticalsStoreRuleError(
+                `vertical package idempotency key "${input.idempotencyKey}" was already bound to different content`,
+                'idempotency-input-conflict',
+              );
+            }
+            return { pkg: mapPackage(raced), converged: true };
+          }
+        }
         const sequence = await tx.query(
           `SELECT COALESCE(MAX(version), 0) AS max FROM verticals_packages WHERE tenant_id = $1 AND package_id = $2`,
           [input.tenantId, input.packageId],
