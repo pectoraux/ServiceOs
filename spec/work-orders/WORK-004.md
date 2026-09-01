@@ -101,12 +101,13 @@ Status: delivered, awaiting Architect verification.
 - Composition-root wiring (`createWorkflowModule`) consuming the single authorization chain (/organizations) and the /policies public contract; no `/workflow` HTTP surface (WORK-012 owns the control plane).
 - Faithful in-memory workflow store for the in-env proofs; SQL store is the authoritative persistence.
 
-### Verification results (implementation environment)
+### Verification results
 
 - `npm run build` (tsc) — PASS.
-- `node --test dist/test/*.test.js` — **359 pass / 0 fail / 38 skipped** locally (the 38 skipped are the 11 gated live-PostgreSQL workflow proofs plus the 27 pre-existing gated live-DB proofs from WORK-002/003/014; this environment has no local PostgreSQL — CI runs them).
 - `node dist/src/cli/check.js` — PASS: frozen architecture tree, identity/tenancy, work, policies and workflow boundary checks, branch/frontier conformance.
-- `scripts/governance-check.py` — PASS.
+- `scripts/governance-check.py` — PASS (after the flagged roadmap reconciliation).
+- Local test suite — 399 tests / 361 pass / 0 fail / 38 gated-skipped (live-PostgreSQL proofs; this environment has no local PostgreSQL).
+- **GitHub Actions run `33517124126` (head `b10b67d`) — `foundation` and `repository-governance` both PASS; tests job: 399/399 tests, 0 fail, 0 SKIPPED, with all 11 live-PostgreSQL workflow proofs executing against the postgres:17 service** (migration idempotency + enumeration constraint, schema-level status CHECK, full lifecycle with strictly-sequenced ledger, dependency gate, one-wins parallel transitions, keyed convergence under TRUE parallelism, advisory-lock-serialized gate race, real /policies gate, out-of-band tamper detection, SLA hooks, cross-tenant SQL isolation). Two earlier runs (`33516110164`, `33516686173`) exposed the defects recorded below; both were fixed and re-proven.
 - New test files: `workflow-transitions.test.ts` (12), `workflow-authority.test.ts` (25), `workflow-idempotency.test.ts` (6), `workflow-concurrency.test.ts` (9), `workflow-tenant-isolation.test.ts` (6), `workflow-boundary-checks.test.ts` (16), `workflow.integration.test.ts` (11, live-PostgreSQL, CI-only).
 
 ### Proof classes
