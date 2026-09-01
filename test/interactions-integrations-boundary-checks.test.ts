@@ -116,10 +116,20 @@ test('the real migration pins the closed enumerations, lifecycle shapes and keye
   for (const state of ['intended', 'dispatching', 'dispatched', 'observed']) {
     assert.ok(sql.includes(`'${state}'`), `interaction state ${state} must be pinned by the CHECK constraint`);
   }
-  // The lifecycle shape invariants.
+  // The lifecycle shape invariants: 'intended' carries NO state at all
+  // (every mutable state column), the acceptance biconditional (an
+  // observed dispatch-stage failure is the acceptance-free terminal),
+  // the provider-reference pairing, and the NULL-safe failure-stage
+  // check (a failure stage presupposes a failed outcome).
   assert.match(sql, /CHECK \(\(state = 'intended'\) = \(claim_claimed_by IS NULL/);
+  assert.match(sql, /CHECK \(\(state = 'intended'\) = \([\s\S]*?failure_stage IS NULL[\s\S]*?provider_observation IS NULL\)\)/);
+  assert.match(
+    sql,
+    /CHECK \(\(provider IS NOT NULL AND dispatched_at IS NOT NULL AND dispatched_by IS NOT NULL\)[\s\S]*?= \(state = 'dispatched' OR \(state = 'observed'[\s\S]*?failure_stage = 'provider'/,
+  );
+  assert.match(sql, /CHECK \(provider_reference IS NULL OR provider IS NOT NULL\)/);
   assert.match(sql, /CHECK \(\(state = 'observed'\) = \(outcome IS NOT NULL/);
-  assert.match(sql, /CHECK \(failure_stage IS NULL OR outcome = 'failed'\)/);
+  assert.match(sql, /CHECK \(failure_stage IS NULL OR \(outcome IS NOT NULL AND outcome = 'failed'\)\)/);
   // Tenant discipline + keyed idempotency + retry lineage.
   assert.match(sql, /CREATE TABLE interaction_effects \([\s\S]*tenant_id\s+UUID NOT NULL REFERENCES org_service_tenants \(id\)/);
   assert.match(sql, /CREATE UNIQUE INDEX interaction_effects_tenant_idempotency_key[\s\S]*WHERE idempotency_key IS NOT NULL/);

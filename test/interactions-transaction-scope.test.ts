@@ -371,6 +371,106 @@ test('the dispatch mutations (claim, completion, failure, observation) each run 
   assert.equal(tripwire.openTransactions(), 0);
 });
 
+test('state writes keep the stored record hash consistent with the stored updated_at (moving clock)', async () => {
+  // Regression proof for a frozen-clock-masked defect class: the record
+  // hash must be computed over the POST-write record INCLUDING the new
+  // updated_at. A store that hashes the stale updatedAt while the row
+  // stores the write's now poisons every subsequent read's integrity
+  // verification (a false interaction-record-tampered). The harness
+  // echoes each UPDATE's parameters into the canned row, so the poisoned
+  // row is read back by the very next statement and the defect fails
+  // here; the frozen clocks elsewhere in the suite cannot see it.
+  let row: Record<string, unknown> = interactionRow('intended');
+  const respond: Responder = (sql, params) => {
+    switch (classify(sql)) {
+      case 'interaction-row-lock':
+        return [row];
+      case 'interaction-state-write': {
+        row = {
+          ...row,
+          state: params[0],
+          claim_claimed_by: params[1],
+          claim_claimed_at: params[2],
+          provider: params[3],
+          provider_reference: params[4],
+          dispatched_at: params[5],
+          dispatched_by: params[6],
+          outcome: params[7],
+          failure_stage: params[8],
+          observed_by: params[9],
+          observed_at: params[10],
+          provider_observation: params[11],
+          record_hash: params[12],
+          updated_at: params[13],
+        };
+        return [];
+      }
+      case 'observation-write': {
+        // recordObservation's UPDATE: SET state = 'observed', outcome = $1,
+        // failure_stage = $2, observed_by = $3, observed_at = $4,
+        // provider_observation = $5, record_hash = $6, updated_at = $4.
+        row = {
+          ...row,
+          state: 'observed',
+          outcome: params[0],
+          failure_stage: params[1],
+          observed_by: params[2],
+          observed_at: params[3],
+          provider_observation: params[4],
+          record_hash: params[5],
+          updated_at: params[3],
+        };
+        return [];
+      }
+      default:
+        throw new Error(
+          `transaction-scope harness: SQL drifted from the store contract (update the classifier): ${sql.trim().slice(0, 80)}`,
+        );
+    }
+  };
+  const tripwire = createTripwireExecutor(respond);
+  const store = createSqlInteractionsStore(tripwire.executor);
+
+  // A MOVING clock: each state write lands strictly after the previous one.
+  const t1 = new Date('2026-09-01T11:00:00.000Z');
+  const t2 = new Date('2026-09-01T12:00:00.000Z');
+  const t3 = new Date('2026-09-01T13:00:00.000Z');
+
+  const claimed = await store.claimDispatch({
+    tenantId: TENANT,
+    interactionId: INTERACTION_ID,
+    claimedBy: ACTOR,
+    now: t1,
+  });
+  assert.equal(claimed.state, 'dispatching');
+  assert.equal(claimed.updatedAt.getTime(), t1.getTime(), 'the post-write record carries the write timestamp');
+
+  // Reading the claim's own write back (row-lock) verifies the integrity
+  // hash over the STORED updated_at — a stale-hash claim fails here.
+  const completed = await store.completeDispatch({
+    tenantId: TENANT,
+    interactionId: INTERACTION_ID,
+    provider: PROVIDER,
+    providerReference: PROVIDER_REF,
+    dispatchedBy: ACTOR,
+    now: t2,
+  });
+  assert.equal(completed.state, 'dispatched');
+  assert.equal(completed.updatedAt.getTime(), t2.getTime());
+
+  const observed = await store.recordObservation({
+    tenantId: TENANT,
+    interactionId: INTERACTION_ID,
+    outcome: 'succeeded',
+    providerObservation: { receipt: 'moving-clock' },
+    observedBy: ACTOR,
+    now: t3,
+  });
+  assert.equal(observed.interaction.state, 'observed');
+  assert.equal(observed.interaction.updatedAt.getTime(), t3.getTime());
+  assert.equal(tripwire.openTransactions(), 0);
+});
+
 // ---------------------------------------------------------------------------
 // /notifications store: the pointer write
 // ---------------------------------------------------------------------------

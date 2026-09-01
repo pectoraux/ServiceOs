@@ -16,8 +16,12 @@
 --     provider acceptance, and the OBSERVED result with an explicit
 --     outcome. The lifecycle is closed ('intended' -> 'dispatching' ->
 --     'dispatched' -> 'observed') and shape-checked so a row can never
---     claim an acceptance without a claim, an observation without an
---     acceptance, or a failure stage without a failed outcome.
+--     claim an acceptance without a claim, record a success observation
+--     without an acceptance, or carry a failure stage without a failed
+--     outcome. One deliberate acceptance-free terminal: an observed
+--     DISPATCH-stage failure (the provider never accepted — the sink
+--     invocation itself failed), which is the explicit, recoverable
+--     failure record of the retry protocol.
 --   * NO Service Work state is written anywhere in this migration's
 --     tables: work_service_works.status belongs to the /workflow
 --     authority alone (WORK-004 checks reject any other writer). A
@@ -112,15 +116,38 @@ CREATE TABLE interaction_effects (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   -- Lifecycle shape invariants (schema-level backstops of the store's
-  -- state machine; the module/store are the authority):
+  -- state machine; the module/store are the authority). The legal shapes:
+  --   intended    : nothing set
+  --   dispatching : the claim is set
+  --   dispatched  : claim + provider acceptance are set
+  --   observed    : claim + the observation are set; the acceptance is
+  --                 set UNLESS the observation is an explicit dispatch-
+  --                 stage failure (the provider never accepted: the sink
+  --                 invocation itself failed — the acceptance-free
+  --                 terminal the retry protocol recovers from)
+  -- 'intended' rows carry no state at all (EVERY mutable state column).
   CHECK ((state = 'intended') = (claim_claimed_by IS NULL AND claim_claimed_at IS NULL
-                                  AND provider IS NULL AND dispatched_at IS NULL AND dispatched_by IS NULL
-                                  AND outcome IS NULL AND observed_by IS NULL AND observed_at IS NULL)),
+                                  AND provider IS NULL AND provider_reference IS NULL
+                                  AND dispatched_at IS NULL AND dispatched_by IS NULL
+                                  AND outcome IS NULL AND failure_stage IS NULL
+                                  AND observed_by IS NULL AND observed_at IS NULL
+                                  AND provider_observation IS NULL)),
   CHECK ((state IN ('dispatching','dispatched','observed')) = (claim_claimed_by IS NOT NULL AND claim_claimed_at IS NOT NULL)),
-  CHECK ((state IN ('dispatched','observed')) = (provider IS NOT NULL AND dispatched_at IS NOT NULL AND dispatched_by IS NOT NULL)),
+  -- A provider acceptance exists exactly when the row is 'dispatched' or
+  -- an observation that presupposes one (a success, or a provider-stage
+  -- failure: accepted, then the provider reported failure). A
+  -- dispatch-stage failure observation carries NO acceptance.
+  CHECK ((provider IS NOT NULL AND dispatched_at IS NOT NULL AND dispatched_by IS NOT NULL)
+         = (state = 'dispatched' OR (state = 'observed'
+                                     AND (outcome = 'succeeded'
+                                          OR (outcome = 'failed' AND failure_stage = 'provider'))))),
+  -- A provider reference without its provider is meaningless.
+  CHECK (provider_reference IS NULL OR provider IS NOT NULL),
   CHECK ((state = 'observed') = (outcome IS NOT NULL AND observed_by IS NOT NULL AND observed_at IS NOT NULL
                                   AND provider_observation IS NOT NULL)),
-  CHECK (failure_stage IS NULL OR outcome = 'failed'),
+  -- A failure stage presupposes a failed outcome (written NULL-safely:
+  -- NULL OR NULL must not pass the CHECK by evaluating to NULL).
+  CHECK (failure_stage IS NULL OR (outcome IS NOT NULL AND outcome = 'failed')),
   CHECK ((policy_key IS NULL) = (policy_decision_id IS NULL))
 );
 COMMENT ON TABLE interaction_effects IS 'Provider-neutral external interaction ledger: the durable business side-effect boundary (durable intent -> dispatch claim -> provider acceptance -> observed result); a provider success is an observation, never an automatic business completion (/interactions authority, WORK-015)';

@@ -176,34 +176,63 @@ function mapInteraction(row: InteractionRow): InteractionRecord {
   if (!isInteractionState(state)) {
     throw tampered(id, `state "${state}" is outside the interaction lifecycle`);
   }
+  // Column-group consistency (fail closed, mirroring the schema's
+  // lifecycle shape CHECKs): a partial or orphan group — a claim with one
+  // column set, a partial acceptance, a provider reference without its
+  // provider, observation columns without an outcome, a failure stage on
+  // a non-failed outcome — is an inconsistent row, detected at the read
+  // boundary as tampering rather than silently dropped from the record
+  // (which would blind the integrity hash to those columns).
+  if ((row.claim_claimed_by !== null) !== (row.claim_claimed_at !== null)) {
+    throw tampered(id, 'claim columns are inconsistent');
+  }
+  const hasProvider = row.provider !== null;
+  if (hasProvider !== (row.dispatched_at !== null) || hasProvider !== (row.dispatched_by !== null)) {
+    throw tampered(id, 'dispatch acceptance columns are inconsistent');
+  }
+  if (row.provider_reference !== null && !hasProvider) {
+    throw tampered(id, 'provider_reference is set without a provider');
+  }
+  const hasOutcome = row.outcome !== null;
+  if (
+    hasOutcome !== (row.observed_by !== null) ||
+    hasOutcome !== (row.observed_at !== null) ||
+    hasOutcome !== (row.provider_observation !== null)
+  ) {
+    throw tampered(id, 'observation columns are inconsistent');
+  }
+  if (row.failure_stage !== null && row.outcome !== 'failed') {
+    throw tampered(id, `failure stage "${row.failure_stage}" is set on outcome "${row.outcome}"`);
+  }
   const claim: InteractionClaim | null =
     row.claim_claimed_by !== null && row.claim_claimed_at !== null
       ? { claimedBy: row.claim_claimed_by, claimedAt: toDate(row.claim_claimed_at) }
       : null;
   const dispatch: InteractionDispatch | null =
-    row.provider !== null && row.dispatched_at !== null && row.dispatched_by !== null
+    hasProvider
       ? {
-          provider: row.provider,
+          provider: row.provider as string,
           providerReference: row.provider_reference,
-          dispatchedAt: toDate(row.dispatched_at),
-          dispatchedBy: row.dispatched_by,
+          dispatchedAt: toDate(row.dispatched_at as Date | string),
+          dispatchedBy: row.dispatched_by as string,
         }
       : null;
   let observation: InteractionObservation | null = null;
-  if (row.outcome !== null) {
-    if (!isOutcome(row.outcome) || row.observed_by === null || row.observed_at === null) {
-      throw tampered(id, 'observation columns are inconsistent');
+  if (hasOutcome) {
+    if (!isOutcome(row.outcome as string)) {
+      throw tampered(id, `outcome "${row.outcome}" is outside the outcome list`);
     }
-    const failureStage = row.failure_stage === null ? null : isFailureStage(row.failure_stage) ? row.failure_stage : null;
+    const failureStage =
+      row.failure_stage === null ? null : isFailureStage(row.failure_stage) ? row.failure_stage : null;
     if (row.failure_stage !== null && failureStage === null) {
       throw tampered(id, `failure stage "${row.failure_stage}" is invalid`);
     }
     observation = {
-      outcome: row.outcome,
+      outcome: row.outcome as InteractionOutcome,
       failureStage,
       providerObservation: row.provider_observation,
-      observedBy: row.observed_by,
-      observedAt: toDate(row.observed_at),
+      observedBy: row.observed_by as string,
+      observedAt: toDate(row.observed_at as Date | string),
     };
   }
   const interaction: InteractionRecord = {
@@ -348,7 +377,12 @@ export function createSqlInteractionsStore(executor: TransactionalExecutor): Int
             : 'observation-state-invalid',
       );
     }
-    const updated = next(current);
+    // The post-write record: every legitimate state write advances
+    // updated_at to THIS write's now — the record hash is computed over
+    // the post-write record INCLUDING the new updated_at, so the stored
+    // hash and the stored row stay consistent (a moving clock must never
+    // poison the next read's integrity verification).
+    const updated: InteractionRecord = { ...next(current), updatedAt: input.now };
     const recordHash = computeInteractionRecordHash(updated);
     await query(
       tx,
@@ -676,6 +710,7 @@ export function createSqlInteractionsStore(executor: TransactionalExecutor): Int
         const updated: InteractionRecord = {
           ...current,
           state: 'observed',
+          updatedAt: input.now,
           observation: {
             outcome: input.outcome,
             failureStage: input.outcome === 'failed' ? 'provider' : null,

@@ -303,10 +303,15 @@ test('live: the full lifecycle over real SQL (intend -> dispatch -> observe) wit
     const reread = await b.interactions.getInteraction(b.owner, b.tenantId, interaction.id);
     assert.equal(reread.observation?.outcome, 'succeeded');
     assert.deepEqual(reread.correlation, { workId: '00000000-0000-4000-8000-000000000077' });
-    // The keyed retry converges on the durable record.
+    // The keyed retry converges on the durable record. The re-submission
+    // carries the SAME logical intent (capability, params AND correlation
+    // — the input hash covers the full intent core): anything less would
+    // be a divergent re-submission of the key, which correctly fails
+    // closed with INTERACTION_INPUT_CONFLICT.
     const retry = await b.interactions.createInteraction(b.owner, b.tenantId, {
       capability: 'email',
       params: EMAIL_PARAMS,
+      correlation: { workId: '00000000-0000-4000-8000-000000000077' },
       idempotencyKey: 'live-1',
     });
     assert.equal(retry.converged, true);
@@ -349,12 +354,32 @@ test('live: parallel dispatches — ONE adapter invocation; the loser fails clos
     ]);
     const fulfilled = outcomes.flatMap((outcome) => (outcome.status === 'fulfilled' ? [outcome.value] : []));
     const rejected = outcomes.flatMap((outcome) => (outcome.status === 'rejected' ? [outcome.reason as InteractionsError] : []));
-    assert.equal(fulfilled.length, 1);
-    assert.equal(fulfilled[0]?.invoked, true);
-    assert.equal(fulfilled[0]?.interaction.state, 'dispatched');
-    assert.equal(rejected.length, 1);
-    assert.ok(rejected[0] instanceof InteractionsError);
-    assert.equal(rejected[0].code, 'DISPATCH_IN_PROGRESS');
+    // The claim CAS serializes the dispatches: BOTH legal loser outcomes
+    // are accepted (the module contract: "the loser converges (already
+    // dispatched) or fails closed with DISPATCH_IN_PROGRESS"). Over real
+    // SQL the loser's post-conflict re-check may postdate the winner's
+    // COMPLETE dispatch commit — converging is then the correct outcome
+    // (the WORK-004 post-conflict re-check discipline; demanding the
+    // rejection would make the proof timing-dependent).
+    assert.ok(
+      (fulfilled.length === 1 && rejected.length === 1) || (fulfilled.length === 2 && rejected.length === 0),
+      `exactly one of the legal loser outcomes: fulfilled=${fulfilled.length} rejected=${rejected.length}`,
+    );
+    if (rejected.length === 1) {
+      // The loser observed the claim still held: typed, recoverable.
+      assert.ok(rejected[0] instanceof InteractionsError);
+      assert.equal(rejected[0].code, 'DISPATCH_IN_PROGRESS');
+      assert.equal(fulfilled[0]?.invoked, true);
+    } else {
+      // The loser converged on the twin's completed dispatch: NO second
+      // invocation, the converged view of the same durable record.
+      assert.equal(fulfilled.filter((outcome) => outcome.invoked).length, 1);
+      assert.equal(fulfilled.filter((outcome) => outcome.converged).length, 1);
+    }
+    // Every fulfilled view agrees on the durable settled state.
+    for (const outcome of fulfilled) {
+      assert.equal(outcome.interaction.state, 'dispatched');
+    }
     // ONE provider effect; the row is in exactly one settled state.
     assert.equal(b.emailLog.count(), 1);
     const rows = await b.pool.query('SELECT state FROM interaction_effects WHERE id = $1', [interaction.id]);
@@ -485,8 +510,13 @@ test('live: out-of-band tampering of an interaction row is detected on read', { 
   const b = await preparedLive();
   try {
     const interaction = await intend(b, 'tamper-live-1');
-    // Out-of-band UPDATE without recomputing the record hash.
-    await b.pool.query(`UPDATE interaction_effects SET provider_reference = 'forged' WHERE id = $1`, [interaction.id]);
+    // Out-of-band UPDATE without recomputing the record hash: the live
+    // equivalent of the in-env capability flip — a schema-LEGAL value
+    // (still inside the frozen taxonomy) that diverges the record hash.
+    // (Fields the schema's shape CHECKs pin — orphan columns, partial
+    // groups — are rejected by the database itself at write time; the
+    // record hash is the tamper evidence for every LEGAL-shaped write.)
+    await b.pool.query(`UPDATE interaction_effects SET capability = 'sms' WHERE id = $1`, [interaction.id]);
     await assert.rejects(
       b.interactions.getInteraction(b.owner, b.tenantId, interaction.id),
       (error: unknown) => (error as InteractionsError).code === 'INTERACTION_RECORD_TAMPERED',
