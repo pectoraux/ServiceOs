@@ -50,6 +50,21 @@ import {
   type TenantRecord,
 } from '../../src/modules/organizations/index.js';
 import type { RouteDescriptor } from '../../src/platform/http/index.js';
+import {
+  createWorkModule,
+  WorkStoreMissingError,
+  WorkStoreRuleError,
+  type AddDependencyInput,
+  type CreateAttemptInput,
+  type CreateWorkInput,
+  type DispatchAttemptInput,
+  type RecordAttemptResultInput,
+  type WorkAttemptRecord,
+  type WorkDependencyRecord,
+  type WorkModule,
+  type WorkRecord,
+  type WorkStore,
+} from '../../src/modules/work/index.js';
 
 /** Internal mutable shape of a readonly record (stores keep these; reads copy). */
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
@@ -464,4 +479,307 @@ export function buildIdentityApp(options: { now?: () => Date } = {}): IdentityAp
     now,
   });
   return { authStore, orgStore, auth, organizations, routes: [...auth.routes(), ...organizations.routes()] };
+}
+
+// ---------------------------------------------------------------------------
+// In-memory /work store (WORK-003)
+// ---------------------------------------------------------------------------
+
+type MutableWork = Mutable<WorkRecord>;
+type MutableAttempt = Mutable<WorkAttemptRecord>;
+type MutableDependency = Mutable<WorkDependencyRecord>;
+
+export interface InMemoryWorkStoreOptions {
+  now?: () => Date;
+  /** Race-injection points before the synchronous critical sections. */
+  beforeCreateWork?: () => Promise<void>;
+  beforeCreateAttempt?: () => Promise<void>;
+  beforeAddDependency?: () => Promise<void>;
+  beforeDispatchAttempt?: () => Promise<void>;
+  beforeRecordResult?: () => Promise<void>;
+}
+
+/**
+ * Faithful in-memory implementation of the /work store port. NOT a second
+ * persistence authority: it implements the same contract the SQL store
+ * implements, so the module's decision logic and the retry/supersession
+ * protocol are proven without a live PostgreSQL:
+ *
+ * - every read is tenant-predicated exactly like the SQL store;
+ * - `reads` counters prove denials happen before domain data access;
+ * - createWork/createAttempt/addDependency perform their check+mutate
+ *   sequence inside ONE synchronous critical section (the semantics of the
+ *   locked SQL transaction); async hooks inject deterministic interleaving
+ *   points BEFORE the critical section so concurrency proofs exercise real
+ *   races;
+ * - dependency-cycle detection is a graph traversal equivalent to the SQL
+ *   recursive CTE;
+ * - the same typed rule/missing errors as the SQL store.
+ */
+export class InMemoryWorkStore implements WorkStore {
+  readonly works = new Map<string, MutableWork>();
+  readonly worksByIdempotency = new Map<string, string>();
+  readonly attempts = new Map<string, MutableAttempt>();
+  readonly dependencies = new Map<string, MutableDependency>();
+  readonly reads = {
+    workById: 0,
+    worksList: 0,
+    attemptById: 0,
+    attemptsList: 0,
+    dependenciesList: 0,
+  };
+  /** Race-injection hooks (public so concurrency tests can swap them). */
+  readonly options: InMemoryWorkStoreOptions;
+  private readonly now: () => Date;
+
+  constructor(options: InMemoryWorkStoreOptions = {}) {
+    this.options = options;
+    this.now = options.now ?? (() => new Date());
+  }
+
+  async createWork(input: CreateWorkInput): Promise<{ work: WorkRecord; converged: boolean }> {
+    await this.options.beforeCreateWork?.();
+    // Synchronous critical section (SQL: insert against the partial unique
+    // index, conflict -> converged re-read).
+    if (input.idempotencyKey !== null) {
+      const existingId = this.worksByIdempotency.get(`${input.tenantId}:${input.idempotencyKey}`);
+      if (existingId !== undefined) {
+        const existing = this.works.get(existingId);
+        if (existing !== undefined) return { work: { ...existing }, converged: true };
+      }
+    }
+    const work: MutableWork = {
+      id: randomUUID(),
+      tenantId: input.tenantId,
+      workType: input.workType,
+      title: input.title,
+      status: 'draft',
+      createdBy: input.createdBy,
+      idempotencyKey: input.idempotencyKey,
+      currentAttemptId: null,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+    this.works.set(work.id, work);
+    if (work.idempotencyKey !== null) {
+      this.worksByIdempotency.set(`${work.tenantId}:${work.idempotencyKey}`, work.id);
+    }
+    return { work: { ...work }, converged: false };
+  }
+
+  async findWorkById(tenantId: string, workId: string): Promise<WorkRecord | null> {
+    this.reads.workById += 1;
+    const work = this.works.get(workId);
+    // MANDATORY tenant predicate: a row in another tenant is invisible.
+    return work !== undefined && work.tenantId === tenantId ? { ...work } : null;
+  }
+
+  async listWorks(tenantId: string): Promise<WorkRecord[]> {
+    this.reads.worksList += 1;
+    return [...this.works.values()]
+      .filter((work) => work.tenantId === tenantId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id))
+      .map((work) => ({ ...work }));
+  }
+
+  async addDependency(input: AddDependencyInput): Promise<{ dependency: WorkDependencyRecord; converged: boolean }> {
+    await this.options.beforeAddDependency?.();
+    // Synchronous critical section (SQL: advisory transaction lock).
+    if (input.workId === input.dependsOnWorkId) {
+      throw new WorkStoreRuleError('a work cannot depend on itself', 'self-dependency');
+    }
+    const work = this.works.get(input.workId);
+    const prerequisite = this.works.get(input.dependsOnWorkId);
+    if (work === undefined || prerequisite === undefined || work.tenantId !== input.tenantId || prerequisite.tenantId !== input.tenantId) {
+      throw new WorkStoreMissingError(`dependency endpoints must both exist in tenant ${input.tenantId}`, 'work');
+    }
+    for (const dependency of this.dependencies.values()) {
+      if (dependency.workId === input.workId && dependency.dependsOnWorkId === input.dependsOnWorkId) {
+        return { dependency: { ...dependency }, converged: true };
+      }
+    }
+    if (this.reaches(prerequisite.id, work.id)) {
+      throw new WorkStoreRuleError(
+        `dependency ${input.workId} -> ${input.dependsOnWorkId} would close a cycle`,
+        'dependency-cycle',
+      );
+    }
+    const dependency: MutableDependency = {
+      id: randomUUID(),
+      tenantId: input.tenantId,
+      workId: input.workId,
+      dependsOnWorkId: input.dependsOnWorkId,
+      createdBy: input.createdBy,
+      createdAt: input.now,
+    };
+    this.dependencies.set(dependency.id, dependency);
+    return { dependency: { ...dependency }, converged: false };
+  }
+
+  async listDependencies(tenantId: string, workId: string): Promise<WorkDependencyRecord[]> {
+    this.reads.dependenciesList += 1;
+    return [...this.dependencies.values()]
+      .filter((dependency) => dependency.tenantId === tenantId && dependency.workId === workId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id))
+      .map((dependency) => ({ ...dependency }));
+  }
+
+  async createAttempt(input: CreateAttemptInput): Promise<{ attempt: WorkAttemptRecord; converged: boolean }> {
+    await this.options.beforeCreateAttempt?.();
+    // Synchronous critical section (SQL: work-row FOR UPDATE lock).
+    const work = this.works.get(input.workId);
+    if (work === undefined || work.tenantId !== input.tenantId) {
+      throw new WorkStoreMissingError(`work ${input.workId} does not exist in this tenant`, 'work');
+    }
+    const live = [...this.attempts.values()].find(
+      (attempt) => attempt.workId === input.workId && attempt.supersededAt === null,
+    );
+    if (input.idempotencyKey !== null && live !== undefined && live.idempotencyKey === input.idempotencyKey) {
+      if (live.dispatchedAt === null) {
+        // Pre-dispatch convergence window: safely re-observe the original.
+        return { attempt: { ...live }, converged: true };
+      }
+      // Dispatched: fall through and create a distinct replacement identity.
+    }
+    const current = live ?? null;
+    const attemptNo = [...this.attempts.values()].filter((attempt) => attempt.workId === input.workId).length + 1;
+    const attempt: MutableAttempt = {
+      id: randomUUID(),
+      tenantId: input.tenantId,
+      workId: input.workId,
+      attemptNo,
+      status: 'pending',
+      idempotencyKey: input.idempotencyKey,
+      createdBy: input.createdBy,
+      supersedesId: current !== null ? current.id : null,
+      supersededAt: null,
+      dispatchedAt: null,
+      outcome: null,
+      result: null,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+    if (current !== null) {
+      current.status = 'superseded';
+      current.supersededAt = input.now;
+      current.updatedAt = input.now;
+    }
+    this.attempts.set(attempt.id, attempt);
+    work.currentAttemptId = attempt.id;
+    work.updatedAt = input.now;
+    return { attempt: { ...attempt }, converged: false };
+  }
+
+  async findAttemptById(tenantId: string, attemptId: string): Promise<WorkAttemptRecord | null> {
+    this.reads.attemptById += 1;
+    const attempt = this.attempts.get(attemptId);
+    // MANDATORY tenant predicate.
+    return attempt !== undefined && attempt.tenantId === tenantId ? { ...attempt } : null;
+  }
+
+  async listAttempts(tenantId: string, workId: string): Promise<WorkAttemptRecord[]> {
+    this.reads.attemptsList += 1;
+    return [...this.attempts.values()]
+      .filter((attempt) => attempt.tenantId === tenantId && attempt.workId === workId)
+      .sort((a, b) => a.attemptNo - b.attemptNo)
+      .map((attempt) => ({ ...attempt }));
+  }
+
+  async dispatchAttempt(input: DispatchAttemptInput): Promise<{ attempt: WorkAttemptRecord; converged: boolean }> {
+    await this.options.beforeDispatchAttempt?.();
+    // Synchronous critical section (SQL: attempt-row FOR UPDATE lock).
+    const attempt = this.attempts.get(input.attemptId);
+    if (attempt === undefined || attempt.tenantId !== input.tenantId) {
+      throw new WorkStoreMissingError(`attempt ${input.attemptId} does not exist in this tenant`, 'attempt');
+    }
+    if (attempt.supersededAt !== null) {
+      throw new WorkStoreRuleError(
+        `attempt ${input.attemptId} is superseded and cannot be dispatched`,
+        'attempt-superseded',
+      );
+    }
+    if (attempt.dispatchedAt !== null) {
+      return { attempt: { ...attempt }, converged: true };
+    }
+    attempt.status = 'dispatched';
+    attempt.dispatchedAt = input.now;
+    attempt.updatedAt = input.now;
+    return { attempt: { ...attempt }, converged: false };
+  }
+
+  async recordAttemptResult(input: RecordAttemptResultInput): Promise<{ attempt: WorkAttemptRecord; converged: boolean }> {
+    await this.options.beforeRecordResult?.();
+    // Synchronous critical section (SQL: attempt-row FOR UPDATE lock).
+    const attempt = this.attempts.get(input.attemptId);
+    if (attempt === undefined || attempt.tenantId !== input.tenantId) {
+      throw new WorkStoreMissingError(`attempt ${input.attemptId} does not exist in this tenant`, 'attempt');
+    }
+    if (attempt.supersededAt !== null) {
+      throw new WorkStoreRuleError(
+        `attempt ${input.attemptId} is superseded; a late result cannot be recorded`,
+        'attempt-superseded',
+      );
+    }
+    if (attempt.outcome !== null) {
+      if (attempt.outcome === input.outcome && attempt.result === input.result) {
+        return { attempt: { ...attempt }, converged: true };
+      }
+      throw new WorkStoreRuleError(
+        `attempt ${input.attemptId} already recorded a different result`,
+        'attempt-result-conflict',
+      );
+    }
+    attempt.status = input.outcome;
+    attempt.outcome = input.outcome;
+    attempt.result = input.result;
+    attempt.updatedAt = input.now;
+    return { attempt: { ...attempt }, converged: false };
+  }
+
+  /** Cycle detection: does `fromId` transitively depend on `toId`? */
+  private reaches(fromId: string, toId: string): boolean {
+    const visited = new Set<string>();
+    const queue = [...this.dependencies.values()]
+      .filter((dependency) => dependency.workId === fromId)
+      .map((dependency) => dependency.dependsOnWorkId);
+    while (queue.length > 0) {
+      const node = queue.shift() as string;
+      if (node === toId) return true;
+      if (visited.has(node)) continue;
+      visited.add(node);
+      for (const dependency of this.dependencies.values()) {
+        if (dependency.workId === node) queue.push(dependency.dependsOnWorkId);
+      }
+    }
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Full Service Work application over the in-memory stores
+// ---------------------------------------------------------------------------
+
+export interface ServiceWorkApp {
+  authStore: InMemoryAuthStore;
+  orgStore: InMemoryOrganizationsStore;
+  workStore: InMemoryWorkStore;
+  auth: AuthModule;
+  organizations: OrganizationsModule;
+  work: WorkModule;
+}
+
+/** Build the composed identity/tenancy/work modules over in-memory stores. */
+export function buildServiceWorkApp(options: { now?: () => Date } = {}): ServiceWorkApp {
+  const now = options.now ?? (() => new Date());
+  const identity = buildIdentityApp({ now });
+  const workStore = new InMemoryWorkStore({ now });
+  const work = createWorkModule({ store: workStore, tenancy: identity.organizations, now });
+  return {
+    authStore: identity.authStore,
+    orgStore: identity.orgStore,
+    workStore,
+    auth: identity.auth,
+    organizations: identity.organizations,
+    work,
+  };
 }

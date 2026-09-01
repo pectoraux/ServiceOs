@@ -25,6 +25,7 @@ import { registerModules, type ServiceModule } from './platform/module-registry/
 import { composeServer } from './platform/http/index.js';
 import { createAuthModule } from './modules/auth/index.js';
 import { createOrganizationsModule } from './modules/organizations/index.js';
+import { createWorkModule } from './modules/work/index.js';
 
 import auth from './modules/auth/index.js';
 import organizations from './modules/organizations/index.js';
@@ -85,6 +86,13 @@ export async function main(): Promise<void> {
     identity: authModule,
   });
 
+  // Service Work authority (/work, WORK-003): consumes the single
+  // authorization chain from /organizations' public interface (tenant
+  // scope resolved server-side before any work data access). /work exposes
+  // the programmatic work/attempt/dependency contract; its HTTP surface is
+  // owned by WORK-012.
+  const workModule = createWorkModule({ executor, tenancy: organizationsModule });
+
   const modules = registerModules(SERVICE_MODULES);
   const server = composeServer({
     modules,
@@ -113,6 +121,7 @@ export async function main(): Promise<void> {
     modules: modules.names().length,
     customerRoutes: [...authModule.routes(), ...organizationsModule.routes()].length,
     persistenceConfigured: persistence.isConfigured(),
+    workAuthority: workModule !== null ? 'composed' : 'missing',
   });
 }
 

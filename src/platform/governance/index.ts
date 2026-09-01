@@ -31,3 +31,13 @@ export {
   RESERVED_CREDENTIAL_EXPORTS,
   ROUTE_GUARD_FACTORY_PATTERN,
 } from './identity-boundary-checks.js';
+export {
+  checkWorkBoundaries,
+  extractCreatedTables,
+  extractRelativeModuleImports,
+  stripSqlComments,
+  RESERVED_TRANSITION_EXPORTS,
+  RESERVED_ZECK_LIFECYCLE_EXPORTS,
+  ALLOWED_MIGRATION_TABLE_PREFIXES,
+  type WorkBoundaryCheckOptions,
+} from './work-boundary-checks.js';
