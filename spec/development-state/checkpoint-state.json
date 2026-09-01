@@ -5,7 +5,7 @@
       "workOrder": "WORK-003",
       "activationIssue": 18,
       "branch": "feat/WORK-003-service-work",
-      "baseRevision": "dbb9297c72d463c03ad8f87f29fb01d398a0f256",
+      "baseRevision": "ce771414d698b6bd846da575c1ca32e29608d4b5",
       "assuranceProfile": "CRITICAL"
     }
   ],
