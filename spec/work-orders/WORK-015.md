@@ -1,6 +1,6 @@
 # WORK-015
 
-Status: planned
+Status: in_flight
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: HIGH_ASSURANCE
@@ -83,3 +83,15 @@ Forbidden:
 ## Definition Of Done
 
 See TEMPLATE.md.
+
+## Activation Record
+
+Activated by Architect on 2026-09-01.
+
+- Branch: `feat/WORK-015-external-interactions`
+- Base revision: `2100e572b23606cfd2ec7681d6d804ca30c2f914`
+- Activation issue: `#29`
+- Implementation authority: Z.ai
+- Review/merge/finalization authority: Architect
+
+The activation decision was made from frozen v1.0 architecture and completed WORK-002 and WORK-004 state. No architecture change is authorized by this Work Order.
