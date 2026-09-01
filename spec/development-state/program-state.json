@@ -61,7 +61,7 @@
       "branch": "feat/WORK-014-business-policy",
       "pr": null,
       "implementationRevision": null,
-      "currentMainRevision": "38e65cf42cb70b5bde7406d0fbb53db9b23d6e12",
+      "currentMainRevision": "30380440a5a735665759f444713909f045e39872",
       "activationIssue": 25,
       "assuranceProfile": "CRITICAL",
       "surfaceFlags": ["documentation","localBehavior","moduleInternals","multiModule","publicContracts","schema","authorityBoundary","concurrency"],
@@ -74,7 +74,7 @@
     {"id":"ADR-0001","summary":"ServiceOS delegates all AI execution to Zeck."}
   ],
   "resumption": {
-    "activeHandoffs": ["WORK-014"],
+    "activeHandoffs":["WORK-014"],
     "rule":"A fresh Architect reads repository state before selecting work."
   }
 }
