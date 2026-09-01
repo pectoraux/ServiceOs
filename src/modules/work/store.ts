@@ -79,11 +79,25 @@ export class WorkStoreMissingError extends Error {
 
 /**
  * Service Work state record. /work persists identity; the only value it
- * ever writes is the initial `draft`. Business state transitions belong to
- * the /workflow authority (WORK-004) — enforced by the closed enumeration
- * in migration 0002 and by the structural boundary checks.
+ * ever WRITES is the initial `draft`. Business state transitions belong to
+ * the /workflow authority (WORK-004) — the enumeration below is the canonical
+ * machine from architecture.md §7, extended by WORK-004's migration through
+ * its own authority; the structural boundary checks enforce that /work never
+ * mutates the column and no module other than /workflow ever does.
  */
-export type WorkStatus = 'draft';
+export type WorkStatus =
+  | 'draft'
+  | 'ready'
+  | 'accepted'
+  | 'in_progress'
+  | 'waiting_information'
+  | 'waiting_approval'
+  | 'blocked'
+  | 'verifying'
+  | 'completed'
+  | 'cancelled'
+  | 'failed'
+  | 'expired';
 
 /** Attempt bookkeeping record (protocol states, not business transitions). */
 export type AttemptStatus = 'pending' | 'dispatched' | 'completed' | 'failed' | 'superseded';

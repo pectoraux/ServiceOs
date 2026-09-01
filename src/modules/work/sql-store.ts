@@ -103,13 +103,37 @@ function toDate(value: Date | string): Date {
   return value instanceof Date ? value : new Date(value);
 }
 
+const WORK_STATUS_ENUM: readonly WorkStatus[] = [
+  'draft',
+  'ready',
+  'accepted',
+  'in_progress',
+  'waiting_information',
+  'waiting_approval',
+  'blocked',
+  'verifying',
+  'completed',
+  'cancelled',
+  'failed',
+  'expired',
+];
+
+function isWorkStatus(value: string): value is WorkStatus {
+  return (WORK_STATUS_ENUM as readonly string[]).includes(value);
+}
+
 function mapWork(row: WorkRow): WorkRecord {
+  if (!isWorkStatus(row.status)) {
+    // The enumeration is schema-level; a divergent value can only come from
+    // out-of-band mutation. Fail closed rather than guess.
+    throw new Error(`work ${row.id} has an out-of-enumeration status "${row.status}"`);
+  }
   return {
     id: row.id,
     tenantId: row.tenant_id,
     workType: row.work_type,
     title: row.title,
-    status: (row.status === 'draft' ? 'draft' : 'draft') as WorkStatus,
+    status: row.status,
     createdBy: row.created_by,
     idempotencyKey: row.idempotency_key,
     currentAttemptId: row.current_attempt_id,

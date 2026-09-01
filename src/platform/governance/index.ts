@@ -47,3 +47,10 @@ export {
   RESERVED_AI_POLICY_EXPORTS,
   type PoliciesBoundaryCheckOptions,
 } from './policies-boundary-checks.js';
+export {
+  checkWorkflowBoundaries,
+  RESERVED_WORKFLOW_AUTHORITY_EXPORTS,
+  RESERVED_AI_WORKFLOW_EXPORTS,
+  WORKFLOW_FORBIDDEN_IMPORTS,
+  type WorkflowBoundaryCheckOptions,
+} from './workflow-boundary-checks.js';
