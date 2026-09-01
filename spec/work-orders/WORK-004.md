@@ -107,7 +107,7 @@ Status: delivered, awaiting Architect verification.
 - `node --test dist/test/*.test.js` — **359 pass / 0 fail / 38 skipped** locally (the 38 skipped are the 11 gated live-PostgreSQL workflow proofs plus the 27 pre-existing gated live-DB proofs from WORK-002/003/014; this environment has no local PostgreSQL — CI runs them).
 - `node dist/src/cli/check.js` — PASS: frozen architecture tree, identity/tenancy, work, policies and workflow boundary checks, branch/frontier conformance.
 - `scripts/governance-check.py` — PASS.
-- New test files: `workflow-transitions.test.ts` (12), `workflow-authority.test.ts` (25), `workflow-idempotency.test.ts` (6), `workflow-concurrency.test.ts` (7), `workflow-tenant-isolation.test.ts` (6), `workflow-boundary-checks.test.ts` (16), `workflow.integration.test.ts` (11, live-PostgreSQL, CI-only).
+- New test files: `workflow-transitions.test.ts` (12), `workflow-authority.test.ts` (25), `workflow-idempotency.test.ts` (6), `workflow-concurrency.test.ts` (9), `workflow-tenant-isolation.test.ts` (6), `workflow-boundary-checks.test.ts` (16), `workflow.integration.test.ts` (11, live-PostgreSQL, CI-only).
 
 ### Proof classes
 
@@ -115,6 +115,11 @@ Status: delivered, awaiting Architect verification.
 - dynamic/behavioral — PASS (legal/illegal transitions, full lifecycle, dependency and policy gates, AC-3 attempt-outcome proof, audit reads, SLA hooks, continuation hook).
 - discrimination/mutation — PASS (mutated trees rejected with exact violation codes; mutant store that skips status re-validation produces the detectable double-ledger anomaly; out-of-band row tamper detected on read).
 - concurrency — PASS in-env (deterministic interleavings: one-wins/one-conflicts, keyed convergence races, dependency-gate race; the live-PostgreSQL equivalents run in CI with TRUE parallel actors).
+
+### Defects found and fixed during implementation/verification
+
+1. The first live-PostgreSQL CI run exposed a keyed-convergence race window the in-env interleavings could not produce: a keyed retry whose keyed lookup ran BEFORE the winner's commit but whose work snapshot (module) / work-row lock acquisition (store) ran AFTER it observed the winner's outcome and failed closed (`TRANSITION_CONFLICT` / an illegal self-loop) instead of converging. Fixed on both planes — the SQL store re-checks keyed convergence after acquiring the FOR UPDATE row lock (the waited-on statement sees the newly committed row under READ COMMITTED), and the module re-checks once on the illegal-transition path — with two dedicated in-env regression tests (convergence + divergent-input fail-closed).
+2. The SLA deadline upsert's rare same-key-different-target race path surfaced a raw driver conflict instead of the typed rule; it is now mapped to `sla-deadline-conflict` (fail closed, retry converges through the pre-check).
 
 ### Governance reconciliation (flagged for Architect review)
 

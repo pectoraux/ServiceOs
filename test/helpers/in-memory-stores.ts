@@ -1131,6 +1131,8 @@ export interface InMemoryWorkflowStoreOptions {
   beforeApplyTransition?: () => Promise<void>;
   /** Race-injection point inside setSlaDeadline, before the critical section. */
   beforeSetSlaDeadline?: () => Promise<void>;
+  /** Race-injection point inside getWorkSnapshot (module-level race proofs). */
+  beforeGetWorkSnapshot?: () => Promise<void>;
 }
 
 /**
@@ -1286,6 +1288,7 @@ export class InMemoryWorkflowStore implements WorkflowStore {
 
   async getWorkSnapshot(tenantId: string, workId: string): Promise<WorkSnapshot | null> {
     this.reads.workSnapshot += 1;
+    await this.options.beforeGetWorkSnapshot?.();
     const work = this.workStore.works.get(workId);
     return work !== undefined && work.tenantId === tenantId
       ? { workId: work.id, workType: work.workType, status: work.status }

@@ -333,3 +333,57 @@ test('store rule errors carry the guarded transition rules (typed surface)', asy
     assert.equal(error.name, 'WorkflowStoreRuleError');
   }
 });
+
+test('regression (CI live-DB defect): a keyed retry whose snapshot observes the winner\'s commit converges', async () => {
+  // The race the live PostgreSQL proof caught: the loser's keyed lookup
+  // runs BEFORE the winner's commit (misses it), and its work snapshot runs
+  // AFTER it (observes the target state, making the derived transition an
+  // illegal self-loop). The keyed re-check on the illegal path converges on
+  // the durable transition instead of rejecting the retry.
+  const b = await base();
+  const workId = await createDraftWork(b);
+  let winnerStarted = false;
+  b.app.workflowStore.options.beforeGetWorkSnapshot = async () => {
+    if (winnerStarted) return;
+    winnerStarted = true;
+    // The winner commits while the loser is between its keyed lookup and
+    // its snapshot read.
+    await b.app.workflow.submitTransition(b.owner, b.tenantId, workId, {
+      to: 'ready',
+      idempotencyKey: 'race-key',
+    });
+  };
+  // The loser (colleague) starts; its snapshot hook runs the winner first.
+  const loser = await b.app.workflow.submitTransition(b.colleague, b.tenantId, workId, {
+    to: 'ready',
+    idempotencyKey: 'race-key',
+  });
+  assert.equal(loser.converged, true);
+  // Exactly one durable transition; the work state is the winner's.
+  assert.equal(b.app.workflowStore.transitions.size, 1);
+  assert.equal((await b.app.work.getWork(b.owner, b.tenantId, workId)).status, 'ready');
+});
+
+test('regression (CI live-DB defect): a divergent keyed retry on the raced path still fails closed', async () => {
+  const b = await base();
+  const workId = await createDraftWork(b);
+  let winnerStarted = false;
+  b.app.workflowStore.options.beforeGetWorkSnapshot = async () => {
+    if (winnerStarted) return;
+    winnerStarted = true;
+    await b.app.workflow.submitTransition(b.owner, b.tenantId, workId, {
+      to: 'ready',
+      idempotencyKey: 'race-key',
+    });
+  };
+  // The loser carries the same key but a DIFFERENT target: the raced
+  // re-check must fail closed as an input conflict, never converge.
+  await assert.rejects(
+    b.app.workflow.submitTransition(b.colleague, b.tenantId, workId, {
+      to: 'cancelled',
+      idempotencyKey: 'race-key',
+    }),
+    (error: unknown) => error instanceof WorkflowError && error.code === 'TRANSITION_INPUT_CONFLICT',
+  );
+  assert.equal(b.app.workflowStore.transitions.size, 1);
+});

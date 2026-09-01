@@ -325,6 +325,17 @@ export function createSqlWorkflowStore(executor: TransactionalExecutor): Workflo
           throw new WorkflowStoreMissingError(`work ${input.workId} does not exist in this tenant`, 'work');
         }
         if (workRow.status !== input.expectedFrom) {
+          // The row lock was WAITED ON: a competing transition may have
+          // committed while this transaction waited (its keyed lookup above
+          // ran before that commit and missed it). Re-check keyed
+          // convergence NOW — under READ COMMITTED this statement sees the
+          // newly committed row — before failing closed.
+          if (input.idempotencyKey !== null) {
+            const raced = await findTransitionRowByKey(tx, input.tenantId, input.idempotencyKey);
+            if (raced !== null) {
+              return convergeOrConflict(raced, input);
+            }
+          }
           throw new WorkflowStoreRuleError(
             `work ${input.workId} is in state "${workRow.status}", not the expected "${input.expectedFrom}"; a competing transition committed first or the work already moved`,
             'transition-conflict',
@@ -500,19 +511,38 @@ export function createSqlWorkflowStore(executor: TransactionalExecutor): Workflo
         }
         // Upsert per (work, state): re-setting a deadline is the deliberate
         // extension path for orchestration (latest set wins, provenance
-        // moves to the latest setter).
-        const rows = await query(
-          `INSERT INTO workflow_sla_deadlines (tenant_id, work_id, state, deadline_at, set_by, idempotency_key, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
-           ON CONFLICT (work_id, state) DO UPDATE
-             SET deadline_at = EXCLUDED.deadline_at,
-                 set_by = EXCLUDED.set_by,
-                 idempotency_key = EXCLUDED.idempotency_key,
-                 updated_at = EXCLUDED.updated_at
-           RETURNING ${SLA_COLUMNS}`,
-          [input.tenantId, input.workId, input.state, input.deadlineAt, input.setBy, input.idempotencyKey, input.now],
-          'setSlaDeadline',
-        );
+        // moves to the latest setter). A same-key race onto a DIFFERENT
+        // (work, state) violates the tenant-scoped keyed partial unique
+        // index (the pre-check above missed the concurrently committed
+        // winner): fail closed with the typed rule. The raised 23505
+        // aborts this transaction — correct here, the caller re-submits
+        // and converges through the pre-check.
+        let rows: Record<string, unknown>[];
+        try {
+          rows = await query(
+            `INSERT INTO workflow_sla_deadlines (tenant_id, work_id, state, deadline_at, set_by, idempotency_key, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+             ON CONFLICT (work_id, state) DO UPDATE
+               SET deadline_at = EXCLUDED.deadline_at,
+                   set_by = EXCLUDED.set_by,
+                   idempotency_key = EXCLUDED.idempotency_key,
+                   updated_at = EXCLUDED.updated_at
+             RETURNING ${SLA_COLUMNS}`,
+            [input.tenantId, input.workId, input.state, input.deadlineAt, input.setBy, input.idempotencyKey, input.now],
+            'setSlaDeadline',
+          );
+        } catch (error) {
+          if (
+            error instanceof StoreConflictError &&
+            error.constraint === 'workflow_sla_deadlines_tenant_idempotency_key'
+          ) {
+            throw new WorkflowStoreRuleError(
+              `idempotency key "${input.idempotencyKey}" was already used for a different SLA deadline input`,
+              'sla-deadline-conflict',
+            );
+          }
+          throw error;
+        }
         return { deadline: mapSlaDeadline(rows[0] as unknown as SlaDeadlineRow), converged: false };
       });
     },

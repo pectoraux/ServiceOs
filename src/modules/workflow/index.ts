@@ -403,6 +403,23 @@ export function createWorkflowModule(options: WorkflowModuleOptions): WorkflowMo
       }
       const from = snapshot.status;
       if (!isLegalTransition(from, to)) {
+        // A keyed submission whose early lookup missed a concurrently
+        // COMMITTING transition can observe the target state here (e.g.
+        // ready -> ready): the original just landed. Re-check the keyed
+        // lookup once before rejecting — the durable transition, if it now
+        // exists, is the authority this retry converges on.
+        if (idempotencyKey !== null) {
+          const raced = await store.findTransitionByIdempotencyKey(tenantId, idempotencyKey);
+          if (raced !== null) {
+            if (raced.inputHash !== inputHash) {
+              throw new WorkflowError(
+                'TRANSITION_INPUT_CONFLICT',
+                `idempotency key "${idempotencyKey}" was already used for a different transition input`,
+              );
+            }
+            return { transition: raced, converged: true };
+          }
+        }
         throw new WorkflowError(
           'ILLEGAL_TRANSITION',
           `transition ${from} -> ${to} is not legal in the canonical Service Work workflow${
