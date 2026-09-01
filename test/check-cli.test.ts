@@ -10,7 +10,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
+import { readFileSync } from 'node:fs';
+
+/** The live Work Order id and branch from canonical state (era-relative). */
+function liveFrontier(): { id: string; branch: string } {
+  const program = JSON.parse(
+    readFileSync(join(process.cwd(), 'spec/development-state/program-state.json'), 'utf8'),
+  ) as { workOrders: { id: string; status: string; branch: string }[] };
+  const live = program.workOrders.find((entry) => entry.status === 'in_flight');
+  assert.ok(live, 'expected an in-flight Work Order in canonical state');
+  return { id: live.id, branch: live.branch };
+}
 
 function runCheckCli(env: Record<string, string>): { status: number | null; stdout: string; stderr: string } {
   const result = spawnSync(process.execPath, [resolve('dist/src/cli/check.js')], {
@@ -22,6 +33,7 @@ function runCheckCli(env: Record<string, string>): { status: number | null; stdo
 }
 
 test('check CLI exits 0 on the real repository with a clean environment', () => {
+  const { id, branch } = liveFrontier();
   const result = runCheckCli({
     PATH: process.env.PATH ?? '',
     HOME: process.env.HOME ?? '',
@@ -32,15 +44,16 @@ test('check CLI exits 0 on the real repository with a clean environment', () => 
     `expected exit 0\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
   );
   assert.match(result.stdout, /PASS: ServiceOS build, architecture, configuration and governance checks/);
-  assert.match(result.stdout, /currentLiveImplementation=WORK-001/);
-  assert.match(result.stdout, /feat\/WORK-001-foundation/);
+  assert.match(result.stdout, new RegExp(`currentLiveImplementation=${id}`));
+  assert.match(result.stdout, new RegExp(branch.replaceAll('/', '\\/')));
+  assert.match(result.stdout, /identity\/tenancy: single authorization chain/);
 });
 
 test('check CLI exits 0 when EXPECT_BRANCH matches the in-flight Work Order branch', () => {
   const result = runCheckCli({
     PATH: process.env.PATH ?? '',
     HOME: process.env.HOME ?? '',
-    EXPECT_BRANCH: 'feat/WORK-001-foundation',
+    EXPECT_BRANCH: liveFrontier().branch,
   });
   assert.equal(result.status, 0, result.stderr);
 });
@@ -59,7 +72,7 @@ test('check CLI fails closed on unknown SERVICEOS_* variables (typo guard)', () 
   const result = runCheckCli({
     PATH: process.env.PATH ?? '',
     HOME: process.env.HOME ?? '',
-    SERVICEOS_EXPECT_BRANCH: 'feat/WORK-001-foundation',
+    SERVICEOS_EXPECT_BRANCH: liveFrontier().branch,
   });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /unknown environment variable SERVICEOS_EXPECT_BRANCH/);
