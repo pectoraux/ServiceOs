@@ -22,6 +22,7 @@ import {
   checkArchitecture,
   checkIdentityTenancyBoundaries,
   checkPackageDependencies,
+  checkPoliciesBoundaries,
   checkWorkBoundaries,
   readProgramState,
   currentLiveWorkOrder,
@@ -65,6 +66,7 @@ function main(): void {
     ...checkPackageDependencies(resolve(repoRoot, 'package.json')),
     ...checkIdentityTenancyBoundaries(srcRoot),
     ...checkWorkBoundaries({ srcRoot, migrationsDir: resolve(repoRoot, 'db/migrations') }),
+    ...checkPoliciesBoundaries({ srcRoot }),
   ];
   if (violations.length > 0) {
     for (const violation of violations) {
@@ -81,6 +83,9 @@ function main(): void {
   );
   console.log(
     `work: no transition engine in /work, no Zeck state machine, migration prefixes conform (no violations)`,
+  );
+  console.log(
+    `policies: single policy authority, no AI/authorization/workflow engine in /policies (no violations)`,
   );
 
   // 3. Canonical governance state: frontier + Work Order identity (AC-4).
