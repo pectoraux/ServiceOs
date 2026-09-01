@@ -113,7 +113,8 @@ Implementation PR: #24.
 - `npm run build` — PASS.
 - `node dist/src/cli/check.js` — PASS: frozen 16-module architecture, identity/tenancy boundary checks, work boundary checks, branch/frontier validation.
 - `scripts/governance-check.py` — PASS.
-- `npm test` — 259 tests: 243 pass, 0 fail; 16 live-PostgreSQL proofs gated on `SERVICEOS_TEST_DATABASE_URL` (execute in CI; the workflow's postgres:17 service is already wired).
+- `npm test` locally — 243 pass, 0 fail; 16 live-PostgreSQL proofs gated locally (no PostgreSQL service in the implementation environment).
+- `npm test` in CI (GitHub Actions run 33472862212, postgres:17 service) — **259/259 pass, 0 fail, 0 skipped**: all 16 live-PostgreSQL proofs executed, including the 8 WORK-003 proofs (migrations with closed work-status CHECK, full work lifecycle, cross-tenant SQL isolation, parallel work-identity convergence, parallel retry convergence, late-attempt FOR UPDATE rejection, opposite-edge dependency serialization, schema backstops).
 - Server smoke — `workAuthority: composed` in the startup log; `/healthz` 200; `/readyz` truthfully 503 with the database down; guarded customer routes reject unauthenticated callers 401 before any data access.
 - GitHub Actions — run on the PR (tests + repository-governance jobs).
 
