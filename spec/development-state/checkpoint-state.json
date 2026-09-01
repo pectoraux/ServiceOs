@@ -1,6 +1,14 @@
 {
   "schemaVersion": 1,
-  "active": [],
+  "active": [
+    {
+      "workOrder": "WORK-014",
+      "activationIssue": 25,
+      "branch": "feat/WORK-014-business-policy",
+      "baseRevision": "272351771aed3886347fe325dd4a7abc317cf669",
+      "assuranceProfile": "CRITICAL"
+    }
+  ],
   "completed": [
     {
       "workOrder": "WORK-001",
