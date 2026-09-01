@@ -1,6 +1,6 @@
 # WORK-003
 
-Status: planned
+Status: in_flight
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: CRITICAL
@@ -70,3 +70,15 @@ Forbidden:
 ## Definition Of Done
 
 See TEMPLATE.md.
+
+## Activation Record
+
+Activated by Architect on 2026-09-01.
+
+- Branch: `feat/WORK-003-service-work`
+- Base revision: `dbb9297c72d463c03ad8f87f29fb01d398a0f256`
+- Activation issue: `#18`
+- Implementation authority: Z.ai
+- Review/merge authority: Architect
+
+The activation decision was made from the frozen v1.0 architecture and the completed WORK-002 state. No architecture change is authorized by this Work Order.
