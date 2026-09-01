@@ -19,11 +19,7 @@
       "surfaceFlags": ["documentation","localBehavior","moduleInternals","multiModule","publicContracts","schema","authorityBoundary","securityTenant"],
       "surfaces": ["platform","repository governance","persistence bootstrap","API composition"],
       "coordination": null,
-      "mergedAs": {
-        "commit": "8bf0336b25eaebed416eacb7236233149885d181",
-        "pr": 15,
-        "mergedAt": "2026-08-31"
-      }
+      "mergedAs": {"commit":"8bf0336b25eaebed416eacb7236233149885d181","pr":15,"mergedAt":"2026-08-31"}
     },
     {
       "id": "WORK-002",
@@ -39,34 +35,30 @@
       "surfaceFlags": ["documentation","localBehavior","moduleInternals","multiModule","publicContracts","schema","authorityBoundary","securityTenant","concurrency"],
       "surfaces": ["/auth","/organizations","authorization","tenant-scoped persistence","customer route guards"],
       "coordination": null,
-      "mergedAs": {
-        "commit": "023a9d520f414a60cedf728db8313226a2b78e75",
-        "pr": 17,
-        "mergedAt": "2026-09-01"
-      }
+      "mergedAs": {"commit":"023a9d520f414a60cedf728db8313226a2b78e75","pr":17,"mergedAt":"2026-09-01"}
     },
     {
       "id": "WORK-003",
       "title": "Service Work",
-      "status": "in_flight",
+      "status": "complete",
       "dependencies": ["WORK-001"],
       "branch": "feat/WORK-003-service-work",
-      "pr": null,
-      "implementationRevision": null,
-      "currentMainRevision": "a94f3c675266240402b48e9858977984cadd7674",
+      "pr": 24,
+      "implementationRevision": "18e022bdcff862701ac13764801fb37dae5e76d7",
+      "currentMainRevision": "4ee83a28ca8777836fbc01c3d64f19447b7c64e8",
       "activationIssue": 18,
       "assuranceProfile": "CRITICAL",
       "surfaceFlags": ["documentation","localBehavior","moduleInternals","multiModule","publicContracts","schema","authorityBoundary","securityTenant","concurrency"],
       "surfaces": ["/work","ServiceWork persistence","WorkAttempt persistence","dependency/idempotency records"],
       "coordination": null,
-      "mergedAs": null
+      "mergedAs": {"commit":"4ee83a28ca8777836fbc01c3d64f19447b7c64e8","pr":24,"mergedAt":"2026-09-01"}
     }
   ],
   "decisions": [
     {"id":"ADR-0001","summary":"ServiceOS delegates all AI execution to Zeck."}
   ],
   "resumption": {
-    "activeHandoffs": ["WORK-003"],
+    "activeHandoffs": [],
     "rule":"A fresh Architect reads repository state before selecting work."
   }
 }
