@@ -1,13 +1,12 @@
 {
   "schemaVersion": 1,
-  "active": [
-    {"workOrder":"WORK-004","activationIssue":27,"branch":"feat/WORK-004-business-workflow","baseRevision":"0df4ad6c71e1e9ebbdc694423d05b79098d62cf2","assuranceProfile":"CRITICAL"}
-  ],
+  "active": [],
   "completed": [
     {"workOrder":"WORK-001","pr":15,"implementationRevision":"a994f24d909c6db7e0d876553e4329a071fa36b7","mergedAs":"8bf0336b25eaebed416eacb7236233149885d181","verdict":"approved","assuranceProfile":"HIGH_ASSURANCE","proofs":["static","dynamic","discrimination"],"knownLimitations":["live PostgreSQL integration tests were gated/skipped in the implementation environment"]},
     {"workOrder":"WORK-002","pr":17,"implementationRevision":"f23b681bb107c5666840e28120efab241e4f4cb6","mergedAs":"023a9d520f414a60cedf728db8313226a2b78e75","verdict":"approved","assuranceProfile":"CRITICAL","proofs":["static","dynamic","discrimination","concurrency"],"knownLimitations":["live PostgreSQL proofs were not available locally but all 8 gated live proofs passed in CI"]},
     {"workOrder":"WORK-003","pr":24,"implementationRevision":"18e022bdcff862701ac13764801fb37dae5e76d7","mergedAs":"4ee83a28ca8777836fbc01c3d64f19447b7c64e8","verdict":"approved","assuranceProfile":"CRITICAL","proofs":["static","dynamic","discrimination","concurrency"],"knownLimitations":["live PostgreSQL proofs were not available locally but all 16 gated live proofs passed in CI"]},
-    {"workOrder":"WORK-014","pr":26,"implementationRevision":"6c3ed13d6c65bfaf142043da5069b8f27ddcb10e","mergedAs":"d7a25d381d4a2429857cf7bf44f6a9c95585e947","verdict":"approved","assuranceProfile":"CRITICAL","proofs":["static","dynamic","discrimination","concurrency"],"knownLimitations":["live PostgreSQL proofs were not available locally but all 27 gated live proofs passed in CI"]}
+    {"workOrder":"WORK-014","pr":26,"implementationRevision":"6c3ed13d6c65bfaf142043da5069b8f27ddcb10e","mergedAs":"d7a25d381d4a2429857cf7bf44f6a9c95585e947","verdict":"approved","assuranceProfile":"CRITICAL","proofs":["static","dynamic","discrimination","concurrency"],"knownLimitations":["live PostgreSQL proofs were not available locally but all 27 gated live proofs passed in CI"]},
+    {"workOrder":"WORK-004","pr":28,"implementationRevision":"f4005e72f8f78607533376f77e39d0afcb123560","mergedAs":"5be64d034253bfebd317da417d395fabcae388e6","verdict":"approved","assuranceProfile":"CRITICAL","proofs":["static","dynamic","discrimination","concurrency"],"knownLimitations":["live PostgreSQL proofs were not available locally but all 40 gated live proofs passed in CI"]}
   ],
   "rule":"Checkpoint verdicts are tied to actual implementation revisions and proof evidence. A completed Work Order remains auditable through its PR, implementation revision and merge commit. An active Work Order records its activation issue, implementation branch, base revision and assurance profile."
 }
