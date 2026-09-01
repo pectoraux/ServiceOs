@@ -61,7 +61,7 @@
       "branch": "feat/WORK-014-business-policy",
       "pr": null,
       "implementationRevision": null,
-      "currentMainRevision": "48162fab659ea0cf55cc9c0bfc82248d373038ed",
+      "currentMainRevision": "334b3e2df006f181cfad9e2210f0c8d8534020a7",
       "activationIssue": 25,
       "assuranceProfile": "CRITICAL",
       "surfaceFlags": ["documentation","localBehavior","moduleInternals","multiModule","publicContracts","schema","authorityBoundary","concurrency"],
