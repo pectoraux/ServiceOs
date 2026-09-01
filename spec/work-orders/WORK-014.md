@@ -1,6 +1,6 @@
 # WORK-014
 
-Status: planned
+Status: in_flight
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: CRITICAL
@@ -81,3 +81,15 @@ Forbidden:
 ## Definition Of Done
 
 See TEMPLATE.md.
+
+## Activation Record
+
+Activated by Architect on 2026-09-01.
+
+- Branch: `feat/WORK-014-business-policy`
+- Base revision: `272351771aed3886347fe325dd4a7abc317cf669`
+- Activation issue: `#25`
+- Implementation authority: Z.ai
+- Review/merge/finalization authority: Architect
+
+The activation decision was made from the frozen v1.0 architecture and the completed WORK-002 and WORK-003 state. No architecture change is authorized by this Work Order.
