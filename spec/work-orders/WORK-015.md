@@ -1,6 +1,6 @@
 # WORK-015
 
-Status: in_flight
+Status: complete
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: HIGH_ASSURANCE
@@ -98,7 +98,7 @@ The activation decision was made from frozen v1.0 architecture and completed WOR
 
 ## Evidence
 
-Status: implementation delivered; awaiting Architect verification.
+Status: approved and merged.
 
 ### What was implemented
 
@@ -113,19 +113,21 @@ Status: implementation delivered; awaiting Architect verification.
 
 The first CI run of the implementation head (run 33529334494, commit 025e6d1) failed 5 of the 13 live-PostgreSQL proofs. Root-cause analysis (calibrated against the run's database-level constraint evidence) found three product-side defect classes and three test-side defects; all fixed in commit ba64af9:
 
-1. **Schema/product contradiction (2 live failures)**: the migration's acceptance biconditional (`(state IN ('dispatched','observed')) = (provider acceptance columns set)`) forbade the module's legitimate explicit dispatch-failure record — an observation with `outcome='failed'`, `failure_stage='dispatch'` and NO acceptance (the provider never accepted: the sink invocation itself failed), which is exactly the explicit, recoverable failure the Work Order mandates. The CHECK now encodes the corrected lifecycle: acceptance exists exactly when the row is `dispatched` or observed with an acceptance-presupposing outcome (succeeded, or provider-stage failure). Relatedly: (a) the failure-stage CHECK `failure_stage IS NULL OR outcome = 'failed'` passed NULL outcomes via the SQL NULL-OR trap (`FALSE OR NULL` evaluates NULL and CHECK treats NULL as pass); now NULL-safe. (b) The intended-all-null CHECK missed `provider_reference`/`failure_stage`/`provider_observation` — an `intended` row could carry a failure stage; now every mutable state column is covered, plus a `provider_reference`-requires-`provider` pairing check.
+1. **Schema/product contradiction (2 live failures)**: the migration's acceptance biconditional (`(state IN ('dispatched','observed')) = (provider acceptance columns set)`) forbade the module's legitimate explicit dispatch-failure record — an observation with `outcome='failed'`, `failure_stage='dispatch'` and NO acceptance (the provider never accepted: the sink invocation itself failed), which is exactly the explicit, recoverable failure the Work Order mandates. The CHECK now encodes the corrected lifecycle: acceptance exists exactly when the row is `dispatched` or observed with an acceptance-presupposing outcome (succeeded, or provider-stage failure). Relatedly: (a) the failure-stage CHECK `failure_stage IS NULL OR outcome = 'failed'` passed NULL outcomes via the SQL NULL-OR trap (`FALSE OR NULL` evaluates NULL and CHECK treats NULL as pass); now NULL-safe. (b) the intended-all-null CHECK missed `provider_reference`/`failure_stage`/`provider_observation` — an `intended` row could carry a failure stage; now every mutable state column is covered, plus a `provider_reference`-requires-`provider` pairing check.
 2. **Frozen-clock-masked record-hash timing defect (found during re-verification, fixed before it could fail a live proof)**: `writeState`/`recordObservation` computed the record hash over the STALE `updatedAt` while the UPDATE stored the write's now — with a moving clock, the very next read of the row would fail closed as a false `interaction-record-tampered` (the second write of every dispatch). Invisible in every test because all suites use frozen clocks. Fixed to match the in-memory double's existing discipline (every state write advances `updatedAt` before hashing); pinned by a NEW always-on in-env moving-clock regression proof through the real SQL store code, verified to discriminate the defect (fix reverted → proof fails; restored → passes).
 3. **Read-boundary orphan blind spot (1 live failure, plus hardening)**: `mapInteraction` silently dropped orphan column groups (e.g. a tampered `provider_reference` on an intended row — dispatch absent, so the column never entered the record hash), making such tampering invisible to the read-side integrity check. Orphan/partial groups now fail closed as `interaction-record-tampered` (mirroring the schema shape CHECKs at the read boundary), and the live tamper proof now flips `capability` — a schema-legal, hash-divergent mutation, the exact live equivalent of the in-env tamper seam.
 4. **Test-side (3 live failures)**: (a) the keyed-retry convergence proof re-submitted the idempotency key WITHOUT the original correlation — a divergent input under the pinned intent-identity design (the input hash covers capability/params/correlation/retryOf/policyKey), which correctly fails closed with `INTERACTION_INPUT_CONFLICT`; the re-submission now carries the same logical intent. (b) The parallel-dispatch proof demanded exactly one fulfillment plus one typed rejection — but the loser's post-conflict re-check may postdate the winner's COMPLETE dispatch commit, in which case converging on the durable record is the legal, correct outcome (the WORK-004 post-conflict re-check discipline); the proof now accepts both legal loser outcomes while pinning the invariants that matter (ONE adapter invocation, one settled state, exactly one invoker, convergent views of the same durable record). (c) The tamper proof target was an orphan-invisible column (see 3).
 
-### Verification results (correction head ba64af9)
+### Verification results
 
 - `npm run build` — PASS.
 - `npm run check` (build + config + architecture structural checks incl. the external-interaction boundary checks + governance state) — PASS.
 - `scripts/governance-check.py` — PASS.
-- `npm test` — 501 tests / 448 pass / 0 fail / 53 skipped (40 pre-existing + 13 live-PostgreSQL proofs, CI-gated).
+- `npm test` — 501 tests / 448 pass / 0 fail / 53 skipped locally; CI run 33532244102 executed all 501 tests with 0 fail / 0 skipped, including all 53 live-PostgreSQL proofs.
 - Server smoke: composes 16 modules; `interactionsAuthority: composed`, `notificationsAuthority: composed`, `registeredAdapterCapabilities: 0` (the boundary ships closed).
-- CI run on ba64af9: repository-governance PASS; foundation (all tests incl. the 13 live-PostgreSQL proofs) — see the PR for the final run evidence.
+- Architect verdict: APPROVED.
+- Merge PR: #30.
+- Merge commit: `0a8ef8b03fd5f032d94c5f826c4a2c8e2682e68a` on 2026-09-01.
 
 ### Known limitations
 
