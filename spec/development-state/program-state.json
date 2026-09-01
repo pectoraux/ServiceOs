@@ -53,7 +53,7 @@
       "branch": "feat/WORK-003-service-work",
       "pr": null,
       "implementationRevision": null,
-      "currentMainRevision": "ce771414d698b6bd846da575c1ca32e29608d4b5",
+      "currentMainRevision": "a94f3c675266240402b48e9858977984cadd7674",
       "activationIssue": 18,
       "assuranceProfile": "CRITICAL",
       "surfaceFlags": ["documentation","localBehavior","moduleInternals","multiModule","publicContracts","schema","authorityBoundary","securityTenant","concurrency"],
