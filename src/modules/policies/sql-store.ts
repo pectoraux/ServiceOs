@@ -10,10 +10,14 @@
  *    `tenant_id = $…`. Removing a predicate must fail the tenant-isolation
  *    discrimination tests.
  *
- * 2. CONVERGENCE: `createPolicyVersion` inserts against the partial unique
- *    idempotency index; a conflict for the same logical identity is mapped
- *    to a converged re-read. `recordDecision` likewise converges on the
- *    partial unique decision idempotency index.
+ * 2. CONVERGENCE: `createPolicyVersion` and `recordDecision` insert
+ *    with `ON CONFLICT … DO NOTHING` against the tenant-scoped idempotency
+ *    partial unique indexes; a suppressed insert (a concurrent creator of
+ *    the same logical identity committed first) is re-read INSIDE the same
+ *    healthy transaction and converges on the durable row. DO NOTHING is
+ *    load-bearing here: a raised 23505 would abort the PostgreSQL
+ *    transaction (25P02) and make the convergence re-read impossible.
+ *    Concurrent creators converge on one identity instead of duplicating.
  *
  * 3. SERIALIZED VERSION NUMBERING: `createPolicyVersion` takes a
  *    transaction-scope advisory lock keyed on (tenant, policy key, scope)
@@ -358,8 +362,7 @@ export function createSqlPolicyStore(executor: TransactionalExecutor): PolicySto
   return {
     async createPolicyVersion(input: CreatePolicyVersionInput): Promise<{ contract: PolicyContractRecord; converged: boolean }> {
       return executor.withTransaction(async (tx) => {
-        // Converge on an existing logical creation first (the partial unique
-        // index is the race backstop for actors that slipped past the lock).
+        // Converge on an existing logical creation first.
         if (input.idempotencyKey !== null) {
           const existing = await findContractRowByIdempotencyKey(tx, input.tenantId, input.idempotencyKey);
           if (existing !== null) {
@@ -376,42 +379,43 @@ export function createSqlPolicyStore(executor: TransactionalExecutor): PolicySto
           [input.tenantId, input.policyKey, input.scope],
         );
         const version = (sequence.rows[0] as { next: number }).next;
-        try {
-          const rows = await insertReturning(
-            tx,
-            `INSERT INTO policy_contracts (tenant_id, policy_key, scope, version, status, rules, default_effect, created_by, idempotency_key, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, 'draft', $5::jsonb, $6, $7, $8, $9, $9)
-             RETURNING ${CONTRACT_COLUMNS}`,
-            [
-              input.tenantId,
-              input.policyKey,
-              input.scope,
-              version,
-              JSON.stringify(input.rules),
-              input.defaultEffect,
-              input.createdBy,
-              input.idempotencyKey,
-              input.now,
-            ],
-            'createPolicyVersion',
-          );
-          return { contract: mapContract(rows[0] as unknown as ContractRow), converged: false };
-        } catch (error) {
-          const conflict = mapStoreError(error, 'createPolicyVersion');
-          if (
-            conflict instanceof StoreConflictError &&
-            conflict.constraint === 'policy_contracts_tenant_idempotency_key' &&
-            input.idempotencyKey !== null
-          ) {
-            // A concurrent creator of the same logical identity committed
-            // first: converge on the durable row.
-            const existing = await findContractRowByIdempotencyKey(tx, input.tenantId, input.idempotencyKey);
-            if (existing !== null) {
-              return { contract: mapContract(existing), converged: true };
-            }
-          }
-          throw conflict;
+        // INSERT ... ON CONFLICT DO NOTHING against the tenant-scoped
+        // idempotency partial unique index: a concurrent creator of the
+        // same logical identity committed first, and DO NOTHING (unlike a
+        // raised 23505) keeps THIS transaction healthy, so the convergence
+        // re-read below can run inside it. (A raised unique violation
+        // aborts the PostgreSQL transaction — the catch-and-reread pattern
+        // would fail with 25P02 "current transaction is aborted".)
+        const inserted = await tx.query(
+          `INSERT INTO policy_contracts (tenant_id, policy_key, scope, version, status, rules, default_effect, created_by, idempotency_key, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, 'draft', $5::jsonb, $6, $7, $8, $9, $9)
+           ON CONFLICT (tenant_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+           RETURNING ${CONTRACT_COLUMNS}`,
+          [
+            input.tenantId,
+            input.policyKey,
+            input.scope,
+            version,
+            JSON.stringify(input.rules),
+            input.defaultEffect,
+            input.createdBy,
+            input.idempotencyKey,
+            input.now,
+          ],
+        );
+        if (inserted.rows.length > 0) {
+          return { contract: mapContract(inserted.rows[0] as unknown as ContractRow), converged: false };
         }
+        if (input.idempotencyKey !== null) {
+          const existing = await findContractRowByIdempotencyKey(tx, input.tenantId, input.idempotencyKey);
+          if (existing !== null) {
+            return { contract: mapContract(existing), converged: true };
+          }
+        }
+        throw new StoreConflictError(
+          'createPolicyVersion violated a uniqueness constraint',
+          'policy_contracts_tenant_idempotency_key',
+        );
       });
     },
 
@@ -504,52 +508,52 @@ export function createSqlPolicyStore(executor: TransactionalExecutor): PolicySto
             return { decision: mapDecision(existing), converged: true };
           }
         }
-        try {
-          const rows = await insertReturning(
-            tx,
-            `INSERT INTO policy_decisions (tenant_id, policy_key, outcome, deciding_layer, deciding_rule_id, frozen_revision, layers, input, input_hash, record_hash, decided_by, idempotency_key, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13)
-             RETURNING ${DECISION_COLUMNS}`,
-            [
-              input.tenantId,
-              input.policyKey,
-              input.outcome,
-              input.decidingLayer,
-              input.decidingRuleId,
-              input.frozenRevision,
-              JSON.stringify(input.layers),
-              JSON.stringify(input.input),
-              input.inputHash,
-              input.recordHash,
-              input.decidedBy,
-              input.idempotencyKey,
-              input.now,
-            ],
-            'recordDecision',
-          );
-          return { decision: mapDecision(rows[0] as unknown as DecisionRow), converged: false };
-        } catch (error) {
-          const conflict = mapStoreError(error, 'recordDecision');
-          if (
-            conflict instanceof StoreConflictError &&
-            conflict.constraint === 'policy_decisions_tenant_idempotency_key' &&
-            input.idempotencyKey !== null
-          ) {
-            // A concurrent evaluation of the same gated decision committed
-            // first: converge when the input matches, fail closed otherwise.
-            const existing = await findDecisionRowByIdempotencyKey(tx, input.tenantId, input.idempotencyKey);
-            if (existing !== null) {
-              if (existing.input_hash !== input.inputHash) {
-                throw new PolicyStoreRuleError(
-                  `decision idempotency key "${input.idempotencyKey}" was already bound to a different input`,
-                  'decision-input-conflict',
-                );
-              }
-              return { decision: mapDecision(existing), converged: true };
-            }
-          }
-          throw conflict;
+        // INSERT ... ON CONFLICT DO NOTHING against the tenant-scoped
+        // decision idempotency partial unique index: DO NOTHING (unlike a
+        // raised 23505) keeps THIS transaction healthy, so the convergence /
+        // conflict logic below can re-read inside it.
+        const inserted = await tx.query(
+          `INSERT INTO policy_decisions (tenant_id, policy_key, outcome, deciding_layer, deciding_rule_id, frozen_revision, layers, input, input_hash, record_hash, decided_by, idempotency_key, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13)
+           ON CONFLICT (tenant_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+           RETURNING ${DECISION_COLUMNS}`,
+          [
+            input.tenantId,
+            input.policyKey,
+            input.outcome,
+            input.decidingLayer,
+            input.decidingRuleId,
+            input.frozenRevision,
+            JSON.stringify(input.layers),
+            JSON.stringify(input.input),
+            input.inputHash,
+            input.recordHash,
+            input.decidedBy,
+            input.idempotencyKey,
+            input.now,
+          ],
+        );
+        if (inserted.rows.length > 0) {
+          return { decision: mapDecision(inserted.rows[0] as unknown as DecisionRow), converged: false };
         }
+        // A concurrent evaluation of the same gated decision committed
+        // first: converge when the input matches, fail closed otherwise.
+        if (input.idempotencyKey !== null) {
+          const existing = await findDecisionRowByIdempotencyKey(tx, input.tenantId, input.idempotencyKey);
+          if (existing !== null) {
+            if (existing.input_hash !== input.inputHash) {
+              throw new PolicyStoreRuleError(
+                `decision idempotency key "${input.idempotencyKey}" was already bound to a different input`,
+                'decision-input-conflict',
+              );
+            }
+            return { decision: mapDecision(existing), converged: true };
+          }
+        }
+        throw new StoreConflictError(
+          'recordDecision violated a uniqueness constraint',
+          'policy_decisions_tenant_idempotency_key',
+        );
       });
     },
 

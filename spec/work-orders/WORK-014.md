@@ -124,11 +124,15 @@ Implementation branch: `feat/WORK-014-business-policy` (base revision `272351771
 
 - `npm run build` (tsc) — PASS.
 - `node dist/src/cli/check.js` — PASS: frozen 16-module architecture, identity/tenancy boundary checks, work boundary checks, NEW policies boundary checks, frontier/branch conformance.
-- `npm test` locally — 286 pass, 0 fail; 27 live-PostgreSQL proofs gated locally (no PostgreSQL service in the implementation environment).
+- `npm test` locally — 287 pass, 0 fail; 27 live-PostgreSQL proofs gated locally (no PostgreSQL service in the implementation environment).
 - Server smoke — `policyAuthority: composed` in the startup log; `/healthz` 200; `/readyz` truthfully 503 with the database down; guarded customer routes reject unauthenticated callers 401 before any data access.
 - GitHub Actions — run on the PR (tests + repository-governance jobs); live-PostgreSQL proofs execute in CI through the postgres:17 service.
 
-### Acceptance-criterion evidence
+### Defects found and fixed during verification
+
+1. **Aborted-transaction convergence bug (live-PostgreSQL only).** `createPolicyVersion`/`recordDecision` originally converged by catching a raised 23505 and re-reading inside the SAME transaction — but a raised unique violation aborts the PostgreSQL transaction (25P02), so the convergence re-read failed under real concurrency. Fixed with `INSERT … ON CONFLICT (tenant_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`, which keeps the transaction healthy so the convergence/conflict logic can re-read inside it. (The in-memory double cannot catch this class: it is exactly why the live proofs exist.)
+2. **Composition-semantics gap surfaced by the live lifecycle proof.** A customer override's DEFAULT effect applies to inputs its rules do not cover: a deny-default override legitimately tightens uncovered inputs (deny-dominates), so a base allow does not survive a deny-default override. The first live test expressed the wrong expectation; the semantics were pinned explicitly (deny-default = strict standalone posture; allow-default = tightening-only "follow the base" posture) and the lifecycle test restructured (base-only evaluation before the override exists). Both postures are now pinned by dedicated behavioral tests.
+3. **Constraint-name regex mismatch (test-side).** The version-unique constraint name is `policy_contracts_tenant_id_policy_key_scope_version_key` (underscores); the first backstop assertion used commas/spaces and never matched.
 
 - AC-1 (one provider-independent business-policy interface) — the `/policies` public contract is the sole policy surface; structural check `policy-engine-duplicate` rejects any other module exporting policy-engine entry points; the evaluator is pure code with no model/provider/agent import or export (also enforced by `ai-policy-engine-in-policies` and the global AI package denylist).
 - AC-2 (same inputs ⇒ same decision) — determinism tests (repeated evaluation, attribute-order-independent canonical input hash, pure evaluator stability) plus live-SQL determinism proof and `verifyDecision` replay.

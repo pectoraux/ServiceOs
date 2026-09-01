@@ -252,7 +252,7 @@ test('live: schema backstops hold (closed enumerations, one active, idempotency 
          VALUES ($1, 'probe.key', 'base', 1, 'draft', '[]'::jsonb, 'deny', $2)`,
         [probeTenant, probeUser],
       ),
-      /policy_contracts_pkey|tenant_id, policy_key, scope, version/i,
+      /policy_contracts_tenant_id_policy_key_scope_version_key|policy_contracts_pkey/i,
     );
 
     // Idempotency partial unique indexes: same (tenant, key) twice fails.
@@ -294,19 +294,38 @@ test('live: full policy lifecycle over real SQL with revision-bound provenance',
     const { policies, owner, tenantId } = app;
     const base = await seedActivePolicies(app);
 
+    // Base-only resolution and evaluation first.
+    const resolvedBaseOnly = await policies.resolvePolicy(owner, tenantId, 'billing.refund');
+    assert.equal(resolvedBaseOnly.base?.id, base.id);
+    assert.equal(resolvedBaseOnly.customer, null);
+    assert.equal(resolvedBaseOnly.frozenRevision, 'frozen-v1.0');
+
+    // Allow through the base (web, small).
+    const web = await policies.evaluatePolicy(owner, {
+      tenantId,
+      policyKey: 'billing.refund',
+      action: 'side-effect:refund.issue',
+      attributes: { amount: 120, channel: 'web' },
+    });
+    assert.equal(web.decision.outcome, 'allow');
+    assert.equal(web.decision.decidingLayer, 'base');
+    assert.equal(web.decision.decidingRuleId, 'allow-web');
+
+    // A tightening customer override: deny partner-channel refunds. Its
+    // default effect is 'allow' ("follow the base for anything my rules do
+    // not cover") — the tightening-only posture.
     const customer = await policies.createPolicyVersion(owner, {
       tenantId,
       policyKey: 'billing.refund',
       scope: 'customer',
       rules: [{ id: 'deny-partner', when: { kind: 'attribute', name: 'channel', operator: 'eq', value: 'partner' }, effect: 'deny' }],
-      defaultEffect: 'deny',
+      defaultEffect: 'allow',
     });
     await policies.activatePolicyVersion(owner, tenantId, customer.contract.id);
 
     const resolved = await policies.resolvePolicy(owner, tenantId, 'billing.refund');
     assert.equal(resolved.base?.id, base.id);
     assert.equal(resolved.customer?.id, customer.contract.id);
-    assert.equal(resolved.frozenRevision, 'frozen-v1.0');
 
     // Tightening: partner channel denied by the customer override.
     const partner = await policies.evaluatePolicy(owner, {
@@ -319,22 +338,12 @@ test('live: full policy lifecycle over real SQL with revision-bound provenance',
     assert.equal(partner.decision.decidingLayer, 'customer');
     assert.equal(partner.decision.decidingRuleId, 'deny-partner');
 
-    // Allow through the base (web, small).
-    const web = await policies.evaluatePolicy(owner, {
-      tenantId,
-      policyKey: 'billing.refund',
-      action: 'side-effect:refund.issue',
-      attributes: { amount: 120, channel: 'web' },
-    });
-    assert.equal(web.decision.outcome, 'allow');
-    assert.equal(web.decision.decidingLayer, 'base');
-
     // Provenance pins each consulted version (AC-5).
     const baseLayer = web.decision.layers.find((l) => l.layer === 'base');
     const customerLayer = web.decision.layers.find((l) => l.layer === 'customer');
     assert.equal(baseLayer?.policyId, base.id);
     assert.equal(baseLayer?.version, base.version);
-    assert.equal(customerLayer?.policyId, customer.contract.id);
+    assert.equal(customerLayer?.policyId, null, 'the base-only decision consulted no customer version');
     assert.equal(web.decision.decidedBy, owner.id);
 
     // Idempotent decision convergence + replay verification over real SQL.

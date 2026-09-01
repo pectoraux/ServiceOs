@@ -243,6 +243,57 @@ test('override precedence: customer deny tightens; customer allow cannot weaken 
   assert.equal(customerLayerP?.policyId, customer.id);
 });
 
+test('override default effects: deny-default tightens uncovered inputs; allow-default follows the base', async () => {
+  const { app, owner, tenantId } = await scenario();
+  await activatedBase(app, owner, tenantId, refundBaseRules(), 'deny');
+
+  // An allow-default override ("tighten partner-channel only; otherwise
+  // follow the base"): the web input stays allowed.
+  await activatedCustomer(app, owner, tenantId, [
+    { id: 'deny-partner', when: { kind: 'attribute', name: 'channel', operator: 'eq', value: 'partner' }, effect: 'deny' },
+  ], 'allow');
+  const webWithFollow = await app.policies.evaluatePolicy(owner, {
+    tenantId,
+    ...GATED,
+    attributes: { amount: 120, channel: 'web' },
+  });
+  assert.equal(webWithFollow.decision.outcome, 'allow');
+  assert.equal(webWithFollow.decision.decidingLayer, 'customer', 'the override\'s allow default carries the uncovered input');
+  assert.equal(webWithFollow.decision.decidingRuleId, null);
+
+  // A base deny still dominates the allow-default override (no weakening).
+  const partnerDenyBaseScenario = await scenario();
+  await activatedBase(partnerDenyBaseScenario.app, partnerDenyBaseScenario.owner, partnerDenyBaseScenario.tenantId, [
+    { id: 'deny-partner', when: { kind: 'attribute', name: 'channel', operator: 'eq', value: 'partner' }, effect: 'deny' },
+  ], 'deny');
+  await activatedCustomer(partnerDenyBaseScenario.app, partnerDenyBaseScenario.owner, partnerDenyBaseScenario.tenantId, [
+    { id: 'allow-partner-anyway', when: { kind: 'attribute', name: 'channel', operator: 'eq', value: 'partner' }, effect: 'allow' },
+  ], 'allow');
+  const overridden = await partnerDenyBaseScenario.app.policies.evaluatePolicy(partnerDenyBaseScenario.owner, {
+    tenantId: partnerDenyBaseScenario.tenantId,
+    ...GATED,
+    attributes: { channel: 'partner' },
+  });
+  assert.equal(overridden.decision.outcome, 'deny');
+  assert.equal(overridden.decision.decidingLayer, 'base');
+
+  // A deny-default override ("deny anything my rules do not allow"): the
+  // uncovered web input is denied even though the base allows it.
+  const strictScenario = await scenario();
+  await activatedBase(strictScenario.app, strictScenario.owner, strictScenario.tenantId, refundBaseRules(), 'deny');
+  await activatedCustomer(strictScenario.app, strictScenario.owner, strictScenario.tenantId, [
+    { id: 'deny-partner', when: { kind: 'attribute', name: 'channel', operator: 'eq', value: 'partner' }, effect: 'deny' },
+  ], 'deny');
+  const webUnderStrict = await strictScenario.app.policies.evaluatePolicy(strictScenario.owner, {
+    tenantId: strictScenario.tenantId,
+    ...GATED,
+    attributes: { amount: 120, channel: 'web' },
+  });
+  assert.equal(webUnderStrict.decision.outcome, 'deny');
+  assert.equal(webUnderStrict.decision.decidingLayer, 'customer');
+  assert.equal(webUnderStrict.decision.decidingRuleId, null);
+});
+
 test('fail closed: with no active base policy the decision is deny (no grant from nothing)', async () => {
   const { app, owner, tenantId } = await scenario();
   // Only a customer override exists — it allows everything.
@@ -271,6 +322,12 @@ test('provenance: decisions are revision-bound and attributable (AC-5)', async (
     ...GATED,
     attributes: { amount: 120, channel: 'web' },
   });
+  // The override's deny DEFAULT tightens inputs its rules do not cover
+  // (deny-dominates composition): this input matches no customer rule and
+  // the customer contract's declared posture for uncovered inputs is deny.
+  assert.equal(decision.outcome, 'deny');
+  assert.equal(decision.decidingLayer, 'customer');
+  assert.equal(decision.decidingRuleId, null);
   assert.equal(decision.tenantId, tenantId);
   assert.equal(decision.decidedBy, owner.id, 'attributable to the deciding principal');
   assert.equal(decision.frozenRevision, FROZEN_POLICY_REVISION);
