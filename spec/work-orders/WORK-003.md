@@ -76,9 +76,13 @@ See TEMPLATE.md.
 Activated by Architect on 2026-09-01.
 
 - Branch: `feat/WORK-003-service-work`
-- Base revision: `dbb9297c72d463c03ad8f87f29fb01d398a0f256`
+- Base revision: `ce771414d698b6bd846da575c1ca32e29608d4b5`
 - Activation issue: `#18`
 - Implementation authority: Z.ai
-- Review/merge authority: Architect
+- Review/merge/finalization authority: Architect
 
 The activation decision was made from the frozen v1.0 architecture and the completed WORK-002 state. No architecture change is authorized by this Work Order.
+
+## Implementation Status
+
+Implementation has not yet been delivered. This Work Order is the sole active implementation frontier. Z.ai may implement only the scope above and must return a PR with the four required proof classes.
