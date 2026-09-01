@@ -52,13 +52,29 @@
       "surfaces": ["/work","ServiceWork persistence","WorkAttempt persistence","dependency/idempotency records"],
       "coordination": null,
       "mergedAs": {"commit":"4ee83a28ca8777836fbc01c3d64f19447b7c64e8","pr":24,"mergedAt":"2026-09-01"}
+    },
+    {
+      "id": "WORK-014",
+      "title": "Business Policy Authority",
+      "status": "in_flight",
+      "dependencies": ["WORK-002","WORK-003"],
+      "branch": "feat/WORK-014-business-policy",
+      "pr": null,
+      "implementationRevision": null,
+      "currentMainRevision": "38e65cf42cb70b5bde7406d0fbb53db9b23d6e12",
+      "activationIssue": 25,
+      "assuranceProfile": "CRITICAL",
+      "surfaceFlags": ["documentation","localBehavior","moduleInternals","multiModule","publicContracts","schema","authorityBoundary","concurrency"],
+      "surfaces": ["/policies","policy resolution/evaluation","policy decision provenance"],
+      "coordination": null,
+      "mergedAs": null
     }
   ],
   "decisions": [
     {"id":"ADR-0001","summary":"ServiceOS delegates all AI execution to Zeck."}
   ],
   "resumption": {
-    "activeHandoffs": [],
+    "activeHandoffs": ["WORK-014"],
     "rule":"A fresh Architect reads repository state before selecting work."
   }
 }
