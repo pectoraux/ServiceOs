@@ -12,6 +12,15 @@
  * - the full lifecycle works over real SQL (draft -> ... -> completed) with
  *   the append-only ledger strictly sequenced per work and the status write
  *   committed atomically with the audit record;
+ * - the transition critical section is ONE pinned transaction client: a
+ *   pool with a SINGLE connection completes the full transition (and the
+ *   SLA upsert) only if NO statement escapes the transaction — an escaped
+ *   statement routed to the pooled executor waits forever on the exhausted
+ *   pool and fails this proof (the PR #28 review defect class);
+ * - the critical section is atomic END-TO-END: a forced commit failure
+ *   (deferrable constraint trigger) leaves no ledger row, no status change
+ *   and no consumed sequence — an escaped autocommitted statement would
+ *   survive the rollback and fail this proof;
  * - the dependency gate over real SQL fails closed until the prerequisite
  *   work is terminal-completed;
  * - TRUE parallel transitions from the same state: one commits, the other
@@ -107,10 +116,27 @@ interface LiveApp {
   now: { value: Date };
 }
 
+/** Convert a silent hang into a loud, labeled proof failure. */
+async function withProofTimeout<T>(label: string, promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} did not settle within ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 /** Fresh pool + composed modules over a disposable migrated database. */
-async function preparedLive(): Promise<LiveApp> {
+async function preparedLive(
+  poolOptions: { max?: number; connectionTimeoutMillis?: number } = {},
+): Promise<LiveApp> {
   const live = await createLiveTestDatabase();
-  const pool = new pg.Pool({ connectionString: live.dsn, max: 8 });
+  const pool = new pg.Pool({ connectionString: live.dsn, max: 8, ...poolOptions });
   await applyMigrationsPinned(pool, migrations());
   const executor = poolExecutor(pool);
   const auth = createAuthModule({ executor });
@@ -224,6 +250,102 @@ test('live: full lifecycle over real SQL with a strictly sequenced append-only l
     // Continuations of a terminal state are empty.
     const continuations = await b.workflow.listContinuations(b.owner, b.tenantId, workId);
     assert.deepEqual(continuations.continuations, []);
+  } finally {
+    await b.pool.end();
+    await b.live.drop();
+  }
+});
+
+test('live: the transition critical section runs on ONE pinned client — a single-connection pool completes it only if no statement escapes', { skip: SKIP }, async () => {
+  // A pool with EXACTLY ONE connection. While applyTransition's transaction
+  // holds that client, ANY statement routed to the pooled executor (a
+  // different client) can never run: it waits forever on the exhausted pool
+  // (failing here through connectionTimeoutMillis or the proof timeout
+  // below). Only a critical section whose EVERY statement — the keyed
+  // convergence lookup, the work-row FOR UPDATE, the dependency gate, the
+  // ledger sequence allocation, the ledger INSERT, the status write — runs
+  // on the pinned transaction client completes. This fails for ANY escaping
+  // statement (the PR #28 review defect class: the closure-captured pool
+  // executor inside the transaction).
+  const b = await preparedLive({ max: 1, connectionTimeoutMillis: 2000 });
+  try {
+    const workId = await createDraftWork(b);
+    const { transition, converged } = await withProofTimeout(
+      'the single-pinned-client transition',
+      b.workflow.submitTransition(b.owner, b.tenantId, workId, { to: 'ready', idempotencyKey: 'pinned-1' }),
+      15000,
+    );
+    assert.equal(converged, false);
+    assert.equal(transition.fromState, 'draft');
+    assert.equal(transition.toState, 'ready');
+    assert.equal(transition.preconditions.dependencies.evaluated, true);
+    assert.equal((await b.work.getWork(b.owner, b.tenantId, workId)).status, 'ready');
+
+    // The SLA hook's write path is pinned the same way.
+    const { deadline } = await withProofTimeout(
+      'the single-pinned-client SLA upsert',
+      b.workflow.setSlaDeadline(b.owner, b.tenantId, workId, {
+        state: 'ready',
+        deadlineAt: new Date('2026-09-02T10:00:00.000Z'),
+        idempotencyKey: 'pinned-sla-1',
+      }),
+      15000,
+    );
+    assert.equal(deadline.state, 'ready');
+    assert.equal(deadline.idempotencyKey, 'pinned-sla-1');
+  } finally {
+    await b.pool.end();
+    await b.live.drop();
+  }
+});
+
+test('live: applyTransition is ONE atomic unit — a forced commit failure leaves no ledger row, no status change, no consumed sequence', { skip: SKIP }, async () => {
+  const b = await preparedLive();
+  try {
+    const workId = await createDraftWork(b);
+    // Proof fixture (disposable database): a DEFERRABLE constraint trigger
+    // turns the work-row UPDATE's COMMIT into a failure AFTER the whole
+    // critical section has executed. A statement that escaped the
+    // transaction (autocommitted on a different connection — the PR #28
+    // review defect class) would SURVIVE this failure; pinned correctly,
+    // every critical-section effect rolls back together.
+    await b.pool.query('CREATE TABLE workflow_proof_fail_commit (id int PRIMARY KEY)');
+    await b.pool.query(`CREATE FUNCTION workflow_proof_fail_at_commit() RETURNS trigger AS $proof$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM workflow_proof_fail_commit) THEN
+          RAISE EXCEPTION 'proof: forced commit failure';
+        END IF;
+        RETURN NEW;
+      END $proof$ LANGUAGE plpgsql`);
+    await b.pool.query(`CREATE CONSTRAINT TRIGGER workflow_proof_fail_trigger
+      AFTER UPDATE ON work_service_works
+      DEFERRABLE INITIALLY DEFERRED
+      FOR EACH ROW EXECUTE FUNCTION workflow_proof_fail_at_commit()`);
+    await b.pool.query('INSERT INTO workflow_proof_fail_commit (id) VALUES (1)');
+
+    await assert.rejects(
+      b.workflow.submitTransition(b.owner, b.tenantId, workId, { to: 'ready', idempotencyKey: 'atomic-unit-1' }),
+      (error: unknown) => /forced commit failure/.test(String((error as Error | undefined)?.message ?? '')),
+    );
+
+    // NOTHING persisted: no ledger row, no status change, no keyed record.
+    const ledger = await b.pool.query('SELECT count(*)::int AS n FROM workflow_transitions WHERE work_id = $1', [workId]);
+    assert.equal((ledger.rows[0] as { n: number }).n, 0);
+    assert.equal((await b.work.getWork(b.owner, b.tenantId, workId)).status, 'draft');
+
+    // Clear the flag: the SAME keyed submission succeeds from scratch — the
+    // failed attempt consumed no sequence, no key, no state.
+    await b.pool.query('DELETE FROM workflow_proof_fail_commit');
+    const { transition, converged } = await b.workflow.submitTransition(b.owner, b.tenantId, workId, {
+      to: 'ready',
+      idempotencyKey: 'atomic-unit-1',
+    });
+    assert.equal(converged, false);
+    assert.equal(transition.seq, 1);
+    assert.equal((await b.work.getWork(b.owner, b.tenantId, workId)).status, 'ready');
+    const after = await b.workflow.listTransitions(b.owner, b.tenantId, workId);
+    assert.equal(after.length, 1);
+    assert.equal(after[0]?.seq, 1);
   } finally {
     await b.pool.end();
     await b.live.drop();

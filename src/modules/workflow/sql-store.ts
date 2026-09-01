@@ -12,6 +12,19 @@
  *    checks). The status write happens inside the same client-pinned
  *    transaction as the ledger insert, holding the work-row FOR UPDATE lock:
  *    a transition and its audit record commit atomically or not at all.
+ *    EVERY statement of that critical section — the keyed convergence
+ *    lookup, the work-row `FOR UPDATE`, the dependency gate (under the
+ *    per-tenant advisory lock), the ledger sequence allocation, the ledger
+ *    insert and the status write — runs on the ONE pinned transaction
+ *    client (`tx`), never on the pooled executor: the `query` helper below
+ *    takes its executor EXPLICITLY, and every call site inside
+ *    `withTransaction` passes `tx`. A statement routed to the pool inside
+ *    the transaction would run on a different connection, autocommitted,
+ *    outside the transaction (its locks released at statement end, its
+ *    writes invisible to the rollback) — silently voiding the atomicity
+ *    and serialization guarantees this store claims. The transaction-scope
+ *    proofs (in-env tripwire executor; live single-pinned-client pool;
+ *    live forced-commit rollback) fail if ANY statement escapes.
  *    Reads of work rows (snapshot, SLA breach join) are the transition
  *    boundary's own substrate and always carry the mandatory tenant
  *    predicate.
@@ -239,9 +252,25 @@ function mapStoreError(error: unknown, context: string): unknown {
 }
 
 export function createSqlWorkflowStore(executor: TransactionalExecutor): WorkflowStore {
-  async function query(sql: string, params: unknown[], context: string): Promise<Record<string, unknown>[]> {
+  /**
+   * Parameterized statement helper. The FIRST parameter is the executor the
+   * statement runs on, passed EXPLICITLY at every call site: read paths pass
+   * `executor` (the pool); every statement inside `withTransaction` passes
+   * `tx` (the pinned client). This is a load-bearing convention — a
+   * closure-captured executor (the PR #28 review defect class) silently
+   * routes critical-section statements to a different connection,
+   * autocommitted, outside the transaction. The transaction-scope proofs
+   * (in-env tripwire executor; live single-pinned-client pool; live
+   * forced-commit rollback) fail the build if a statement escapes.
+   */
+  async function query(
+    exec: SqlExecutor,
+    sql: string,
+    params: unknown[],
+    context: string,
+  ): Promise<Record<string, unknown>[]> {
     try {
-      const result = await executor.query(sql, params);
+      const result = await exec.query(sql, params);
       return result.rows;
     } catch (error) {
       throw mapStoreError(error, context);
@@ -274,19 +303,6 @@ export function createSqlWorkflowStore(executor: TransactionalExecutor): Workflo
     return row === undefined ? null : row;
   }
 
-  async function findSlaRowByKey(
-    exec: SqlExecutor,
-    tenantId: string,
-    idempotencyKey: string,
-  ): Promise<SlaDeadlineRow | null> {
-    const rows = await exec.query(
-      `SELECT ${SLA_COLUMNS} FROM workflow_sla_deadlines WHERE tenant_id = $1 AND idempotency_key = $2`,
-      [tenantId, idempotencyKey],
-    );
-    const row = rows.rows[0] as unknown as SlaDeadlineRow | undefined;
-    return row === undefined ? null : row;
-  }
-
   /** Converge a keyed re-submission on the durable transition, or fail closed. */
   function convergeOrConflict(row: TransitionRow, input: ApplyTransitionInput): { transition: TransitionRecord; converged: boolean } {
     const transition = mapTransition(row);
@@ -316,6 +332,7 @@ export function createSqlWorkflowStore(executor: TransactionalExecutor): Workflo
         // held through status validation, the gate, the ledger insert and
         // the status write (one atomic unit).
         const workRows = await query(
+          tx,
           `SELECT id, work_type, status FROM work_service_works WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
           [input.tenantId, input.workId],
           'applyTransition',
@@ -350,6 +367,7 @@ export function createSqlWorkflowStore(executor: TransactionalExecutor): Workflo
         if (input.dependencyGateRequired) {
           await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [input.tenantId]);
           const unmet = await query(
+            tx,
             `SELECT count(*) AS unmet
              FROM work_dependencies d
              JOIN work_service_works w ON w.id = d.depends_on_work_id AND w.tenant_id = d.tenant_id
@@ -372,6 +390,7 @@ export function createSqlWorkflowStore(executor: TransactionalExecutor): Workflo
         // Strict per-work ledger sequence, allocated under the work-row
         // lock (race-free; the schema UNIQUE is the backstop).
         const sequence = await query(
+          tx,
           `SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM workflow_transitions WHERE tenant_id = $1 AND work_id = $2`,
           [input.tenantId, input.workId],
           'applyTransition',
@@ -398,6 +417,7 @@ export function createSqlWorkflowStore(executor: TransactionalExecutor): Workflo
         // keyed partial unique index lets a concurrent keyed creator keep a
         // healthy transaction and converge by re-reading below.
         const inserted = await query(
+          tx,
           `INSERT INTO workflow_transitions
              (tenant_id, work_id, seq, from_state, to_state, rule_id, preconditions, reason, transitioned_by, idempotency_key, input_hash, record_hash, created_at)
            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13)
@@ -457,6 +477,7 @@ export function createSqlWorkflowStore(executor: TransactionalExecutor): Workflo
 
     async listTransitions(tenantId: string, workId: string): Promise<TransitionRecord[]> {
       const rows = await query(
+        executor,
         `SELECT ${TRANSITION_COLUMNS} FROM workflow_transitions WHERE tenant_id = $1 AND work_id = $2
          ORDER BY seq ASC`,
         [tenantId, workId],
@@ -467,6 +488,7 @@ export function createSqlWorkflowStore(executor: TransactionalExecutor): Workflo
 
     async getWorkSnapshot(tenantId: string, workId: string): Promise<WorkSnapshot | null> {
       const rows = await query(
+        executor,
         `SELECT id, work_type, status FROM work_service_works WHERE tenant_id = $1 AND id = $2`,
         [tenantId, workId],
         'getWorkSnapshot',
@@ -520,6 +542,7 @@ export function createSqlWorkflowStore(executor: TransactionalExecutor): Workflo
         let rows: Record<string, unknown>[];
         try {
           rows = await query(
+            tx,
             `INSERT INTO workflow_sla_deadlines (tenant_id, work_id, state, deadline_at, set_by, idempotency_key, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
              ON CONFLICT (work_id, state) DO UPDATE
@@ -549,6 +572,7 @@ export function createSqlWorkflowStore(executor: TransactionalExecutor): Workflo
 
     async findSlaDeadline(tenantId: string, workId: string, state: WorkStatus): Promise<SlaDeadlineRecord | null> {
       const rows = await query(
+        executor,
         `SELECT ${SLA_COLUMNS} FROM workflow_sla_deadlines WHERE tenant_id = $1 AND work_id = $2 AND state = $3`,
         [tenantId, workId, state],
         'findSlaDeadline',
@@ -559,6 +583,7 @@ export function createSqlWorkflowStore(executor: TransactionalExecutor): Workflo
 
     async listSlaDeadlines(tenantId: string, workId: string): Promise<SlaDeadlineRecord[]> {
       const rows = await query(
+        executor,
         `SELECT ${SLA_COLUMNS} FROM workflow_sla_deadlines WHERE tenant_id = $1 AND work_id = $2
          ORDER BY state ASC`,
         [tenantId, workId],
@@ -572,6 +597,7 @@ export function createSqlWorkflowStore(executor: TransactionalExecutor): Workflo
       // joining on w.status = d.state therefore yields exactly the works
       // whose CURRENT state deadline has passed — a deterministic read.
       const rows = await query(
+        executor,
         `SELECT w.id AS work_id, w.work_type AS work_type, w.status AS state, d.deadline_at AS deadline_at
          FROM work_service_works w
          JOIN workflow_sla_deadlines d
