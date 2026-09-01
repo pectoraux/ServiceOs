@@ -2,7 +2,7 @@
   "$schema": "../governance/program-state-schema.json",
   "schemaVersion": 1,
   "architectureVersion": "v1.0",
-  "asOf": "2026-08-31",
+  "asOf": "2026-09-01",
   "status": "in_progress",
   "workOrders": [
     {
@@ -28,25 +28,29 @@
     {
       "id": "WORK-002",
       "title": "Identity/Tenancy",
-      "status": "in_flight",
+      "status": "complete",
       "dependencies": ["WORK-001"],
       "branch": "feat/WORK-002-identity-tenancy",
-      "pr": null,
-      "implementationRevision": null,
-      "currentMainRevision": "9602ee474a13e7a4b1ee8daa276a64491a183cea",
+      "pr": 17,
+      "implementationRevision": "f23b681bb107c5666840e28120efab241e4f4cb6",
+      "currentMainRevision": "023a9d520f414a60cedf728db8313226a2b78e75",
       "activationIssue": 16,
       "assuranceProfile": "CRITICAL",
       "surfaceFlags": ["documentation","localBehavior","moduleInternals","multiModule","publicContracts","schema","authorityBoundary","securityTenant","concurrency"],
       "surfaces": ["/auth","/organizations","authorization","tenant-scoped persistence","customer route guards"],
       "coordination": null,
-      "mergedAs": null
+      "mergedAs": {
+        "commit": "023a9d520f414a60cedf728db8313226a2b78e75",
+        "pr": 17,
+        "mergedAt": "2026-09-01"
+      }
     }
   ],
   "decisions": [
     {"id":"ADR-0001","summary":"ServiceOS delegates all AI execution to Zeck."}
   ],
   "resumption": {
-    "activeHandoffs": ["WORK-002"],
+    "activeHandoffs": [],
     "rule":"A fresh Architect reads repository state before selecting work."
   }
 }
