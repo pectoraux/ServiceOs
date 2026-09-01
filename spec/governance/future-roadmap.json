@@ -2,7 +2,6 @@
   "schemaVersion": 1,
   "status": "approved",
   "sequence": [
-    "WORK-004",
     "WORK-015",
     "WORK-005",
     "WORK-007",
@@ -16,7 +15,6 @@
   ],
   "parallelWaves": [
     ["WORK-011"],
-    ["WORK-004"],
     ["WORK-015"],
     ["WORK-005","WORK-007","WORK-008","WORK-009"],
     ["WORK-006"],
@@ -24,5 +22,5 @@
     ["WORK-013"]
   ],
   "selectionRule": "Only dependency-eligible Work Orders with no uncoordinated protected-surface conflict may be activated.",
-  "rationale": "WORK-001, WORK-002 and WORK-003 are complete and WORK-014 is now in flight, so they are removed from the future generation. WORK-014 remains before workflow and side-effect consumers. Parallel waves describe eligibility only; Architect activation is still required. CI validates this future-only roadmap against the evolving Work Order lifecycle."
+  "rationale": "WORK-001, WORK-002, WORK-003 and WORK-014 are complete and WORK-004 is in flight, so they are removed from the future generation. This file is the future-only roadmap: it covers exactly the future generation of dependency-state.json. Parallel waves describe eligibility only; Architect activation is still required. CI validates this future-only roadmap against the evolving Work Order lifecycle. (Reconciled during WORK-004 delivery: the WORK-004 activation had moved dependency-state/frontier-state but this roadmap still listed WORK-004 in the future generation — the single bookkeeping write the Architect skipped due to contents-API staleness; the reconciliation applies exactly the activation's documented frontier.)"
 }

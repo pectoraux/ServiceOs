@@ -1101,3 +1101,367 @@ export function buildPoliciesApp(options: { now?: () => Date } = {}): PoliciesAp
     policies,
   };
 }
+
+// ---------------------------------------------------------------------------
+// In-memory workflow store (WORK-004)
+// ---------------------------------------------------------------------------
+
+import {
+  createWorkflowModule,
+  hashTransitionRecord,
+  WorkflowStoreMissingError,
+  WorkflowStoreRuleError,
+  type ApplyTransitionInput,
+  type SlaBreach,
+  type SlaDeadlineRecord,
+  type SetSlaDeadlineInput,
+  type TransitionPreconditions,
+  type TransitionRecord,
+  type WorkSnapshot,
+  type WorkflowModule,
+  type WorkflowStore,
+} from '../../src/modules/workflow/index.js';
+
+type MutableTransition = Mutable<TransitionRecord>;
+type MutableSlaDeadline = Mutable<SlaDeadlineRecord>;
+
+export interface InMemoryWorkflowStoreOptions {
+  now?: () => Date;
+  /** Race-injection point inside applyTransition, before the critical section. */
+  beforeApplyTransition?: () => Promise<void>;
+  /** Race-injection point inside setSlaDeadline, before the critical section. */
+  beforeSetSlaDeadline?: () => Promise<void>;
+  /** Race-injection point inside getWorkSnapshot (module-level race proofs). */
+  beforeGetWorkSnapshot?: () => Promise<void>;
+}
+
+/**
+ * Faithful in-memory implementation of the /workflow store port: the exact
+ * semantics of the locked SQL transaction — keyed convergence, the work-row
+ * critical section (status check -> dependency gate -> ledger insert ->
+ * status write), the per-(work, state) SLA deadline upsert and the
+ * deterministic breach join. The work tables are the composed
+ * InMemoryWorkStore's internal maps (the transition boundary substrate:
+ * applyTransition is the only writer of a work's status, mirroring the SQL
+ * authority); reads copy, mutations stay internal.
+ */
+export class InMemoryWorkflowStore implements WorkflowStore {
+  readonly transitions = new Map<string, MutableTransition>();
+  readonly transitionsByIdempotency = new Map<string, string>();
+  readonly slaDeadlines = new Map<string, MutableSlaDeadline>();
+  readonly slaDeadlinesByWorkState = new Map<string, string>();
+  readonly slaDeadlinesByIdempotency = new Map<string, string>();
+  readonly reads = {
+    transitionById: 0,
+    transitionByKey: 0,
+    transitionsList: 0,
+    workSnapshot: 0,
+    slaDeadlinesList: 0,
+    slaBreaches: 0,
+  };
+  readonly options: InMemoryWorkflowStoreOptions;
+  private readonly now: () => Date;
+
+  constructor(
+    private readonly workStore: InMemoryWorkStore,
+    options: InMemoryWorkflowStoreOptions = {},
+  ) {
+    this.options = options;
+    this.now = options.now ?? (() => new Date());
+  }
+
+  async applyTransition(input: ApplyTransitionInput): Promise<{ transition: TransitionRecord; converged: boolean }> {
+    await this.options.beforeApplyTransition?.();
+    // Synchronous critical section (SQL: keyed convergence + work-row FOR
+    // UPDATE + advisory-locked dependency gate + insert + status update).
+    if (input.idempotencyKey !== null) {
+      const existingId = this.transitionsByIdempotency.get(`${input.tenantId}:${input.idempotencyKey}`);
+      if (existingId !== undefined) {
+        const existing = this.transitions.get(existingId);
+        if (existing !== undefined) {
+          if (existing.inputHash !== input.inputHash) {
+            throw new WorkflowStoreRuleError(
+              `idempotency key "${input.idempotencyKey}" was already used for a different transition input`,
+              'transition-input-conflict',
+            );
+          }
+          return { transition: { ...existing, preconditions: existing.preconditions }, converged: true };
+        }
+      }
+    }
+    const work = this.workStore.works.get(input.workId);
+    if (work === undefined || work.tenantId !== input.tenantId) {
+      throw new WorkflowStoreMissingError(`work ${input.workId} does not exist in this tenant`, 'work');
+    }
+    if (work.status !== input.expectedFrom) {
+      throw new WorkflowStoreRuleError(
+        `work ${input.workId} is in state "${work.status}", not the expected "${input.expectedFrom}"; a competing transition committed first or the work already moved`,
+        'transition-conflict',
+      );
+    }
+    let dependencies: TransitionPreconditions['dependencies'] = { evaluated: false, satisfied: true };
+    if (input.dependencyGateRequired) {
+      const unmet = [...this.workStore.dependencies.values()].filter(
+        (dependency) =>
+          dependency.tenantId === input.tenantId && dependency.workId === input.workId && (() => {
+            const prerequisite = this.workStore.works.get(dependency.dependsOnWorkId);
+            return prerequisite === undefined || prerequisite.status !== 'completed';
+          })(),
+      );
+      if (unmet.length > 0) {
+        throw new WorkflowStoreRuleError(
+          `work ${input.workId} has ${unmet.length} dependency work(s) that are not completed; it cannot become ready`,
+          'precondition-dependencies',
+        );
+      }
+      dependencies = { evaluated: true, satisfied: true };
+    }
+    const preconditions: TransitionPreconditions = { dependencies, policy: input.policy };
+    // Strict per-work ledger sequence (synchronous critical section).
+    const seq =
+      [...this.transitions.values()].filter((transition) => transition.workId === input.workId).length + 1;
+    const recordHash = hashTransitionRecord({
+      tenantId: input.tenantId,
+      workId: input.workId,
+      seq,
+      fromState: input.expectedFrom,
+      toState: input.to,
+      ruleId: input.ruleId,
+      preconditions,
+      reason: input.reason,
+      transitionedBy: input.transitionedBy,
+      idempotencyKey: input.idempotencyKey,
+      inputHash: input.inputHash,
+      createdAt: input.now.toISOString(),
+    });
+    const transition: MutableTransition = {
+      id: randomUUID(),
+      tenantId: input.tenantId,
+      workId: input.workId,
+      seq,
+      fromState: input.expectedFrom,
+      toState: input.to,
+      ruleId: input.ruleId,
+      preconditions,
+      reason: input.reason,
+      transitionedBy: input.transitionedBy,
+      idempotencyKey: input.idempotencyKey,
+      inputHash: input.inputHash,
+      recordHash,
+      createdAt: input.now,
+    };
+    this.transitions.set(transition.id, transition);
+    if (input.idempotencyKey !== null) {
+      this.transitionsByIdempotency.set(`${input.tenantId}:${input.idempotencyKey}`, transition.id);
+    }
+    // THE transition boundary write: the only status mutation, inside the
+    // same critical section as the ledger insert.
+    work.status = input.to;
+    work.updatedAt = input.now;
+    return { transition: { ...transition, preconditions }, converged: false };
+  }
+
+  async findTransitionById(tenantId: string, transitionId: string): Promise<TransitionRecord | null> {
+    this.reads.transitionById += 1;
+    const transition = this.transitions.get(transitionId);
+    // MANDATORY tenant predicate; reads verify integrity (fail closed).
+    if (transition === undefined || transition.tenantId !== tenantId) return null;
+    return this.verify(transition);
+  }
+
+  async findTransitionByIdempotencyKey(tenantId: string, key: string): Promise<TransitionRecord | null> {
+    this.reads.transitionByKey += 1;
+    const id = this.transitionsByIdempotency.get(`${tenantId}:${key}`);
+    if (id === undefined) return null;
+    const transition = this.transitions.get(id);
+    if (transition === undefined || transition.tenantId !== tenantId) return null;
+    return this.verify(transition);
+  }
+
+  async listTransitions(tenantId: string, workId: string): Promise<TransitionRecord[]> {
+    this.reads.transitionsList += 1;
+    return [...this.transitions.values()]
+      .filter((transition) => transition.tenantId === tenantId && transition.workId === workId)
+      .sort((a, b) => a.seq - b.seq)
+      .map((transition) => this.verify(transition));
+  }
+
+  async getWorkSnapshot(tenantId: string, workId: string): Promise<WorkSnapshot | null> {
+    this.reads.workSnapshot += 1;
+    await this.options.beforeGetWorkSnapshot?.();
+    const work = this.workStore.works.get(workId);
+    return work !== undefined && work.tenantId === tenantId
+      ? { workId: work.id, workType: work.workType, status: work.status }
+      : null;
+  }
+
+  async setSlaDeadline(input: SetSlaDeadlineInput): Promise<{ deadline: SlaDeadlineRecord; converged: boolean }> {
+    await this.options.beforeSetSlaDeadline?.();
+    // Synchronous critical section (SQL: keyed convergence + tenant-predicated
+    // work existence + per-(work, state) upsert).
+    if (input.idempotencyKey !== null) {
+      const existingId = this.slaDeadlinesByIdempotency.get(`${input.tenantId}:${input.idempotencyKey}`);
+      if (existingId !== undefined) {
+        const existing = this.slaDeadlines.get(existingId);
+        if (existing !== undefined) {
+          if (
+            existing.workId !== input.workId ||
+            existing.state !== input.state ||
+            existing.deadlineAt.getTime() !== input.deadlineAt.getTime()
+          ) {
+            throw new WorkflowStoreRuleError(
+              `idempotency key "${input.idempotencyKey}" was already used for a different SLA deadline input`,
+              'sla-deadline-conflict',
+            );
+          }
+          return { deadline: { ...existing }, converged: true };
+        }
+      }
+    }
+    const work = this.workStore.works.get(input.workId);
+    if (work === undefined || work.tenantId !== input.tenantId) {
+      throw new WorkflowStoreMissingError(`work ${input.workId} does not exist in this tenant`, 'work');
+    }
+    const workStateKey = `${input.workId}:${input.state}`;
+    const existingId = this.slaDeadlinesByWorkState.get(workStateKey);
+    if (existingId !== undefined) {
+      // Upsert: the deliberate extension path (latest set wins; the old key
+      // mapping is released exactly like the SQL column overwrite).
+      const existing = this.slaDeadlines.get(existingId);
+      if (existing !== undefined) {
+        if (existing.idempotencyKey !== null && existing.idempotencyKey !== input.idempotencyKey) {
+          this.slaDeadlinesByIdempotency.delete(`${input.tenantId}:${existing.idempotencyKey}`);
+        }
+        existing.deadlineAt = input.deadlineAt;
+        existing.setBy = input.setBy;
+        existing.idempotencyKey = input.idempotencyKey;
+        existing.updatedAt = input.now;
+        return { deadline: { ...existing }, converged: false };
+      }
+    }
+    const deadline: MutableSlaDeadline = {
+      id: randomUUID(),
+      tenantId: input.tenantId,
+      workId: input.workId,
+      state: input.state,
+      deadlineAt: input.deadlineAt,
+      setBy: input.setBy,
+      idempotencyKey: input.idempotencyKey,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+    this.slaDeadlines.set(deadline.id, deadline);
+    this.slaDeadlinesByWorkState.set(workStateKey, deadline.id);
+    if (input.idempotencyKey !== null) {
+      this.slaDeadlinesByIdempotency.set(`${input.tenantId}:${input.idempotencyKey}`, deadline.id);
+    }
+    return { deadline: { ...deadline }, converged: false };
+  }
+
+  async findSlaDeadline(tenantId: string, workId: string, state: TransitionRecord['toState']): Promise<SlaDeadlineRecord | null> {
+    const id = this.slaDeadlinesByWorkState.get(`${workId}:${state}`);
+    if (id === undefined) return null;
+    const deadline = this.slaDeadlines.get(id);
+    return deadline !== undefined && deadline.tenantId === tenantId ? { ...deadline } : null;
+  }
+
+  async listSlaDeadlines(tenantId: string, workId: string): Promise<SlaDeadlineRecord[]> {
+    this.reads.slaDeadlinesList += 1;
+    return [...this.slaDeadlines.values()]
+      .filter((deadline) => deadline.tenantId === tenantId && deadline.workId === workId)
+      .sort((a, b) => a.state.localeCompare(b.state))
+      .map((deadline) => ({ ...deadline }));
+  }
+
+  async listSlaBreaches(tenantId: string, now: Date): Promise<SlaBreach[]> {
+    this.reads.slaBreaches += 1;
+    // Deterministic join: deadlines whose work is CURRENTLY in the deadline
+    // state, past the deadline (the state CHECK excludes terminal states).
+    const breaches: SlaBreach[] = [];
+    for (const deadline of this.slaDeadlines.values()) {
+      if (deadline.tenantId !== tenantId) continue;
+      const work = this.workStore.works.get(deadline.workId);
+      if (work === undefined || work.tenantId !== tenantId) continue;
+      if (work.status === deadline.state && deadline.deadlineAt.getTime() < now.getTime()) {
+        breaches.push({
+          workId: work.id,
+          workType: work.workType,
+          state: deadline.state,
+          deadlineAt: deadline.deadlineAt,
+        });
+      }
+    }
+    return breaches.sort(
+      (a, b) => a.deadlineAt.getTime() - b.deadlineAt.getTime() || a.workId.localeCompare(b.workId),
+    );
+  }
+
+  /** Integrity verification on read (the SQL store recomputes hashes). */
+  private verify(transition: MutableTransition): TransitionRecord {
+    const copy: TransitionRecord = { ...transition, preconditions: transition.preconditions };
+    if (
+      hashTransitionRecord({
+        tenantId: copy.tenantId,
+        workId: copy.workId,
+        seq: copy.seq,
+        fromState: copy.fromState,
+        toState: copy.toState,
+        ruleId: copy.ruleId,
+        preconditions: copy.preconditions,
+        reason: copy.reason,
+        transitionedBy: copy.transitionedBy,
+        idempotencyKey: copy.idempotencyKey,
+        inputHash: copy.inputHash,
+        createdAt: copy.createdAt.toISOString(),
+      }) !== copy.recordHash
+    ) {
+      throw new WorkflowStoreRuleError(
+        `transition ${copy.id} record no longer matches its recorded integrity hash`,
+        'transition-record-tampered',
+      );
+    }
+    return copy;
+  }
+}
+
+export interface WorkflowApp {
+  authStore: InMemoryAuthStore;
+  orgStore: InMemoryOrganizationsStore;
+  workStore: InMemoryWorkStore;
+  policyStore: InMemoryPoliciesStore;
+  workflowStore: InMemoryWorkflowStore;
+  auth: AuthModule;
+  organizations: OrganizationsModule;
+  work: WorkModule;
+  policies: PoliciesModule;
+  workflow: WorkflowModule;
+}
+
+/** Build the composed identity/tenancy/work/policies/workflow modules over in-memory stores. */
+export function buildWorkflowApp(options: { now?: () => Date } = {}): WorkflowApp {
+  const now = options.now ?? (() => new Date());
+  const identity = buildIdentityApp({ now });
+  const workStore = new InMemoryWorkStore({ now });
+  const work = createWorkModule({ store: workStore, tenancy: identity.organizations, now });
+  const policyStore = new InMemoryPoliciesStore({ now });
+  const policies = createPoliciesModule({ store: policyStore, tenancy: identity.organizations, now });
+  const workflowStore = new InMemoryWorkflowStore(workStore, { now });
+  const workflow = createWorkflowModule({
+    store: workflowStore,
+    tenancy: identity.organizations,
+    policies,
+    now,
+  });
+  return {
+    authStore: identity.authStore,
+    orgStore: identity.orgStore,
+    workStore,
+    policyStore,
+    workflowStore,
+    auth: identity.auth,
+    organizations: identity.organizations,
+    work,
+    policies,
+    workflow,
+  };
+}

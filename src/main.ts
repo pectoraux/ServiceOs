@@ -27,6 +27,7 @@ import { createAuthModule } from './modules/auth/index.js';
 import { createOrganizationsModule } from './modules/organizations/index.js';
 import { createWorkModule } from './modules/work/index.js';
 import { createPoliciesModule } from './modules/policies/index.js';
+import { createWorkflowModule } from './modules/workflow/index.js';
 
 import auth from './modules/auth/index.js';
 import organizations from './modules/organizations/index.js';
@@ -103,6 +104,21 @@ export async function main(): Promise<void> {
   // surface (WORK-012 owns the control-plane API).
   const policiesModule = createPoliciesModule({ executor, tenancy: organizationsModule });
 
+  // Business workflow authority (/workflow, WORK-004): the single
+  // deterministic Service Work transition authority. It consumes the single
+  // authorization chain from /organizations' public interface exactly like
+  // /work and /policies, and its transition policy gate consumes /policies'
+  // public evaluation contract (never a duplicate policy engine). The
+  // transition ledger + SLA hook persistence are owned by the /workflow SQL
+  // store; it is the only writer of work_service_works.status. /workflow
+  // exposes the programmatic transition contract; its HTTP surface is owned
+  // by WORK-012.
+  const workflowModule = createWorkflowModule({
+    executor,
+    tenancy: organizationsModule,
+    policies: policiesModule,
+  });
+
   const modules = registerModules(SERVICE_MODULES);
   const server = composeServer({
     modules,
@@ -133,6 +149,7 @@ export async function main(): Promise<void> {
     persistenceConfigured: persistence.isConfigured(),
     workAuthority: workModule !== null ? 'composed' : 'missing',
     policyAuthority: policiesModule !== null ? 'composed' : 'missing',
+    workflowAuthority: workflowModule !== null ? 'composed' : 'missing',
   });
 }
 

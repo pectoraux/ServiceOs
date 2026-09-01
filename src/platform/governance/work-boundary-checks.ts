@@ -83,15 +83,24 @@ export const RESERVED_ZECK_LIFECYCLE_EXPORTS: readonly string[] = [
 
 /**
  * Module-owned table prefixes allowed in migration files. `policy_` was
- * added by WORK-014, which owns the /policies tables (the deliberate,
- * reviewed extension point of this allowlist).
+ * added by WORK-014 and `workflow_` by WORK-004, each owning the new
+ * module's tables (the deliberate, reviewed extension point of this
+ * allowlist).
  */
-export const ALLOWED_MIGRATION_TABLE_PREFIXES: readonly string[] = ['auth_', 'org_', 'work_', 'policy_'];
+export const ALLOWED_MIGRATION_TABLE_PREFIXES: readonly string[] = [
+  'auth_',
+  'org_',
+  'work_',
+  'policy_',
+  'workflow_',
+];
 
 const MODULE_WORK = 'work';
 
-/** Any UPDATE of the works table that writes the status column. */
-const WORK_STATUS_MUTATION_PATTERN = /UPDATE\s+work_service_works\b[^;]*?\bstatus\s*=/is;
+/** Any UPDATE of the works table that writes the status column. Exported
+ * for reuse by the workflow boundary checks: the /workflow authority is the
+ * only writer of `work_service_works.status` (WORK-004). */
+export const WORK_STATUS_MUTATION_PATTERN = /UPDATE\s+work_service_works\b[^;]*?\bstatus\s*=/is;
 
 function* walkTsFiles(root: string): Generator<string> {
   let entries: string[];
