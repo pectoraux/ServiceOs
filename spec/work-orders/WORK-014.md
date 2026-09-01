@@ -92,4 +92,8 @@ Activated by Architect on 2026-09-01.
 - Implementation authority: Z.ai
 - Review/merge/finalization authority: Architect
 
-The activation decision was made from the frozen v1.0 architecture and the completed WORK-002 and WORK-003 state. No architecture change is authorized by this Work Order.
+The activation decision was made from the frozen v1.0 architecture and completed WORK-003 state. No architecture change is authorized by this Work Order.
+
+## Implementation Status
+
+Activated and ready for implementation. Z.ai must implement only the scope above and return a PR with the four required proof classes.
