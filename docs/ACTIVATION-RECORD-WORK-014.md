@@ -5,7 +5,7 @@
 - Architecture: v1.0
 - Assurance: CRITICAL
 - Implementation branch: `feat/WORK-014-business-policy`
-- Base revision: `30380440a5a735665759f444713909f045e39872`
+- Base revision: `272351771aed3886347fe325dd4a7abc317cf669`
 - Activation issue: #25
 - Implementation authority: Z.ai
 - Review / merge / finalization authority: Architect
