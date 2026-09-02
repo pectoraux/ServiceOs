@@ -15,6 +15,7 @@ Activated by the Architect on 2026-09-02.
 - Activation issue: #37
 - Implementation branch: `feat/WORK-007-business-evidence`
 - Activation baseline: `bd11baa497574e576db57c0bc8d6035bb91eec6d`
+- Activation checkpoint: `4a82f3cb3b492443b10873fa3804d2af3aa79303`
 - Assurance profile: `CRITICAL`
 - Implementation authority: Z.ai
 - Review / merge / finalization authority: Architect
