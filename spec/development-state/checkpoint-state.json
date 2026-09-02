@@ -1,6 +1,8 @@
 {
   "schemaVersion": 1,
-  "active": [],
+  "active": [
+    {"workOrder":"WORK-010","activationIssue":61,"implementationBranch":"feat/WORK-010-construction-compliance","baseRevision":"0ef7148900572be30fc88af590e16633911aec61","assuranceProfile":"CRITICAL"}
+  ],
   "completed": [
     {"workOrder":"WORK-001","pr":15,"implementationRevision":"a994f24d909c6db7e0d876553e4329a071fa36b7","mergedAs":"8bf0336b25eaebed416eacb7236233149885d181","verdict":"approved","assuranceProfile":"HIGH_ASSURANCE","proofs":["static","dynamic","discrimination"],"knownLimitations":["live PostgreSQL integration tests were gated/skipped in the implementation environment"]},
     {"workOrder":"WORK-002","pr":17,"implementationRevision":"f23b681bb107c5666840e28120efab241e4f4cb6","mergedAs":"023a9d520f414a60cedf728db8313226a2b78e75","verdict":"approved","assuranceProfile":"CRITICAL","proofs":["static","dynamic","discrimination","concurrency"],"knownLimitations":["live PostgreSQL proofs were not available locally but all 8 gated live proofs passed in CI"]},
