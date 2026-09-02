@@ -3576,6 +3576,21 @@ import {
   type RecordVerificationStoreInput,
   type EvidenceModule,
 } from '../../src/modules/evidence/index.js';
+import {
+  createApprovalsModule,
+  ApprovalStoreMissingError,
+  ApprovalStoreRuleError,
+  computeApprovalDecisionRecordHash,
+  computeApprovalRequestRecordHash,
+  type ApprovalDecisionRecord,
+  type ApprovalDecisionKind,
+  type ApprovalRequestRecord,
+  type ApprovalRequestStatus,
+  type ApprovalsModule,
+  type ApprovalStore,
+  type CreateApprovalRequestStoreInput,
+  type DecideApprovalStoreInput,
+} from '../../src/modules/approvals/index.js';
 
 export interface InMemoryEvidenceStoreOptions {
   now?: () => Date;
@@ -3875,5 +3890,319 @@ export function buildEvidenceApp(
     organizations: identity.organizations,
     work,
     evidence,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// In-memory /approvals store (WORK-008)
+// ---------------------------------------------------------------------------
+
+type MutableApprovalRequest = Mutable<ApprovalRequestRecord>;
+type MutableApprovalDecision = Mutable<ApprovalDecisionRecord>;
+
+export interface InMemoryApprovalStoreOptions {
+  now?: () => Date;
+  /** Race-injection hooks (public so concurrency tests can swap them). */
+  beforeCreateRequest?: () => Promise<void>;
+  beforeDecide?: () => Promise<void>;
+}
+
+/**
+ * Faithful in-memory implementation of the /approvals store port (NOT a
+ * second approval authority): tenant predicates, keyed convergence, and
+ * the SYNCHRONOUS terminal arbitration mirroring the advisory-locked
+ * SQL critical sections (decision writers serialize per request; the
+ * durable request state arbitrates; one decision row per request ever).
+ */
+export class InMemoryApprovalStore implements ApprovalStore {
+  readonly requests = new Map<string, MutableApprovalRequest>();
+  readonly requestsByKey = new Map<string, string>();
+  readonly decisions = new Map<string, MutableApprovalDecision>();
+  readonly decisionsByKey = new Map<string, string>();
+  readonly decisionsByRequest = new Map<string, string>();
+  readonly reads = {
+    requestById: 0,
+    requestByKey: 0,
+    requestsList: 0,
+    decisionById: 0,
+    decisionByKey: 0,
+    decisionByRequest: 0,
+    decisionsList: 0,
+  };
+  readonly options: InMemoryApprovalStoreOptions;
+  private readonly now: () => Date;
+
+  constructor(options: InMemoryApprovalStoreOptions = {}) {
+    this.options = options;
+    this.now = options.now ?? (() => new Date());
+  }
+
+  private verifyRequest(record: MutableApprovalRequest): ApprovalRequestRecord {
+    if (computeApprovalRequestRecordHash(record) !== record.recordHash) {
+      throw new ApprovalStoreRuleError(
+        `approval request ${record.id} record no longer matches its recorded integrity hash`,
+        'approval-request-record-tampered',
+      );
+    }
+    return { ...record };
+  }
+
+  private verifyDecision(record: MutableApprovalDecision): ApprovalDecisionRecord {
+    if (computeApprovalDecisionRecordHash(record) !== record.recordHash) {
+      throw new ApprovalStoreRuleError(
+        `approval decision ${record.id} record no longer matches its recorded integrity hash`,
+        'approval-decision-record-tampered',
+      );
+    }
+    return { ...record };
+  }
+
+  async createRequest(input: CreateApprovalRequestStoreInput): Promise<{ request: ApprovalRequestRecord; converged: boolean }> {
+    await this.options.beforeCreateRequest?.();
+    // Synchronous critical section (SQL: keyed lookup + advisory lock +
+    // post-lock re-check + insert).
+    const key = `${input.tenantId}:${input.idempotencyKey}`;
+    const existingId = this.requestsByKey.get(key);
+    const existing = existingId !== undefined ? this.requests.get(existingId) : undefined;
+    if (existing !== undefined) {
+      if (existing.contentHash !== input.contentHash) {
+        throw new ApprovalStoreRuleError(
+          `approval request idempotency key "${input.idempotencyKey}" was already bound to different content`,
+          'approval-request-input-conflict',
+        );
+      }
+      return { request: this.verifyRequest(existing), converged: true };
+    }
+    const id = randomUUID();
+    const record: MutableApprovalRequest = {
+      id,
+      tenantId: input.tenantId,
+      serviceWorkId: input.serviceWorkId,
+      workAttemptId: input.workAttemptId,
+      policyKey: input.policyKey,
+      policyDecisionId: input.policyDecisionId,
+      subject: JSON.parse(JSON.stringify(input.subject)) as unknown,
+      status: 'pending',
+      idempotencyKey: input.idempotencyKey,
+      contentHash: input.contentHash,
+      recordHash: '',
+      requestedBy: input.requestedBy,
+      requestedAt: input.now,
+      decisionId: null,
+    };
+    record.recordHash = computeApprovalRequestRecordHash(record);
+    this.requests.set(id, record);
+    this.requestsByKey.set(key, id);
+    return { request: this.verifyRequest(record), converged: false };
+  }
+
+  async findRequest(tenantId: string, requestId: string): Promise<ApprovalRequestRecord | null> {
+    this.reads.requestById += 1;
+    const record = this.requests.get(requestId);
+    if (record === undefined || record.tenantId !== tenantId) {
+      return null;
+    }
+    return this.verifyRequest(record);
+  }
+
+  async findRequestByKey(tenantId: string, idempotencyKey: string): Promise<ApprovalRequestRecord | null> {
+    this.reads.requestByKey += 1;
+    const id = this.requestsByKey.get(`${tenantId}:${idempotencyKey}`);
+    const record = id !== undefined ? this.requests.get(id) : undefined;
+    if (record === undefined) {
+      return null;
+    }
+    return this.verifyRequest(record);
+  }
+
+  async listRequests(
+    tenantId: string,
+    filter?: { serviceWorkId?: string; workAttemptId?: string; status?: ApprovalRequestStatus; requestedBy?: string },
+  ): Promise<ApprovalRequestRecord[]> {
+    this.reads.requestsList += 1;
+    const records = [...this.requests.values()]
+      .filter((record) => record.tenantId === tenantId)
+      .filter((record) => filter?.serviceWorkId === undefined || record.serviceWorkId === filter.serviceWorkId)
+      .filter((record) => filter?.workAttemptId === undefined || record.workAttemptId === filter.workAttemptId)
+      .filter((record) => filter?.status === undefined || record.status === filter.status)
+      .filter((record) => filter?.requestedBy === undefined || record.requestedBy === filter.requestedBy)
+      .sort((a, b) => (a.requestedAt.getTime() === b.requestedAt.getTime() ? (a.id < b.id ? -1 : 1) : a.requestedAt.getTime() - b.requestedAt.getTime()))
+      .map((record) => this.verifyRequest(record));
+    return records;
+  }
+
+  async decide(input: DecideApprovalStoreInput): Promise<{
+    request: ApprovalRequestRecord;
+    decision: ApprovalDecisionRecord;
+    converged: boolean;
+  }> {
+    await this.options.beforeDecide?.();
+    // THE synchronous serialized terminal arbitration (SQL: keyed lock
+    // + request-state lock + post-lock keyed re-check + durable-state
+    // arbitration + guarded flip).
+    const key = `${input.tenantId}:${input.idempotencyKey}`;
+    const existingId = this.decisionsByKey.get(key);
+    const existing = existingId !== undefined ? this.decisions.get(existingId) : undefined;
+    if (existing !== undefined) {
+      if (existing.contentHash !== input.contentHash) {
+        throw new ApprovalStoreRuleError(
+          `approval decision idempotency key "${input.idempotencyKey}" was already used for a different decision input`,
+          'approval-decision-input-conflict',
+        );
+      }
+      const request = this.requests.get(input.requestId);
+      if (request === undefined || request.tenantId !== input.tenantId) {
+        throw new ApprovalStoreMissingError('request', input.requestId);
+      }
+      return { request: this.verifyRequest(request), decision: this.verifyDecision(existing), converged: true };
+    }
+    const request = this.requests.get(input.requestId);
+    if (request === undefined || request.tenantId !== input.tenantId) {
+      throw new ApprovalStoreMissingError('request', input.requestId);
+    }
+    if (request.status !== 'pending') {
+      // TERMINAL ARBITRATION: the durable terminal decision is the
+      // authority — converge on a matching verdict, fail closed on
+      // divergence.
+      const terminalId = this.decisionsByRequest.get(`${input.tenantId}:${input.requestId}`);
+      const terminal = terminalId !== undefined ? this.decisions.get(terminalId) : undefined;
+      if (terminal === undefined) {
+        throw new ApprovalStoreRuleError(
+          `approval request ${input.requestId} is terminal ("${request.status}") but has no decision row`,
+          'approval-decision-conflict',
+        );
+      }
+      if (terminal.decision !== input.decision) {
+        throw new ApprovalStoreRuleError(
+          `approval request ${input.requestId} is already terminally ${terminal.decision === 'approve' ? 'approved' : 'rejected'} (decision ${terminal.id} by ${terminal.decidedBy}); a divergent "${input.decision}" decision fails closed — one terminal decision per request (the durable record arbitrates)`,
+          'approval-decision-conflict',
+        );
+      }
+      return { request: this.verifyRequest(request), decision: this.verifyDecision(terminal), converged: true };
+    }
+    // Record the immutable decision row (the one-terminal-decision
+    // backstop: the decisionsByRequest map may already hold another
+    // request's decision only for a DIFFERENT request id).
+    const id = randomUUID();
+    const record: MutableApprovalDecision = {
+      id,
+      tenantId: input.tenantId,
+      requestId: input.requestId,
+      serviceWorkId: request.serviceWorkId,
+      decision: input.decision,
+      reason: input.reason,
+      idempotencyKey: input.idempotencyKey,
+      contentHash: input.contentHash,
+      recordHash: '',
+      decidedBy: input.decidedBy,
+      decidedAt: input.now,
+    };
+    record.recordHash = computeApprovalDecisionRecordHash(record);
+    this.decisions.set(id, record);
+    this.decisionsByKey.set(key, id);
+    this.decisionsByRequest.set(`${input.tenantId}:${input.requestId}`, id);
+    // THE GUARDED STATE FLIP: pending -> terminal exactly once.
+    request.status = input.decision === 'approve' ? 'approved' : 'rejected';
+    request.decisionId = id;
+    request.recordHash = computeApprovalRequestRecordHash(request);
+    return { request: this.verifyRequest(request), decision: this.verifyDecision(record), converged: false };
+  }
+
+  async findDecision(tenantId: string, decisionId: string): Promise<ApprovalDecisionRecord | null> {
+    this.reads.decisionById += 1;
+    const record = this.decisions.get(decisionId);
+    if (record === undefined || record.tenantId !== tenantId) {
+      return null;
+    }
+    return this.verifyDecision(record);
+  }
+
+  async findDecisionByKey(tenantId: string, idempotencyKey: string): Promise<ApprovalDecisionRecord | null> {
+    this.reads.decisionByKey += 1;
+    const id = this.decisionsByKey.get(`${tenantId}:${idempotencyKey}`);
+    const record = id !== undefined ? this.decisions.get(id) : undefined;
+    if (record === undefined) {
+      return null;
+    }
+    return this.verifyDecision(record);
+  }
+
+  async findDecisionByRequest(tenantId: string, requestId: string): Promise<ApprovalDecisionRecord | null> {
+    this.reads.decisionByRequest += 1;
+    const id = this.decisionsByRequest.get(`${tenantId}:${requestId}`);
+    const record = id !== undefined ? this.decisions.get(id) : undefined;
+    if (record === undefined) {
+      return null;
+    }
+    return this.verifyDecision(record);
+  }
+
+  async listDecisions(
+    tenantId: string,
+    filter?: { serviceWorkId?: string; requestId?: string; decidedBy?: string; decision?: ApprovalDecisionKind },
+  ): Promise<ApprovalDecisionRecord[]> {
+    this.reads.decisionsList += 1;
+    const records = [...this.decisions.values()]
+      .filter((record) => record.tenantId === tenantId)
+      .filter((record) => filter?.serviceWorkId === undefined || record.serviceWorkId === filter.serviceWorkId)
+      .filter((record) => filter?.requestId === undefined || record.requestId === filter.requestId)
+      .filter((record) => filter?.decidedBy === undefined || record.decidedBy === filter.decidedBy)
+      .filter((record) => filter?.decision === undefined || record.decision === filter.decision)
+      .sort((a, b) => (a.decidedAt.getTime() === b.decidedAt.getTime() ? (a.id < b.id ? -1 : 1) : a.decidedAt.getTime() - b.decidedAt.getTime()))
+      .map((record) => this.verifyDecision(record));
+    return records;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The composed /approvals test app (WORK-008)
+// ---------------------------------------------------------------------------
+
+export interface ApprovalAuthorityApp {
+  readonly authStore: InMemoryAuthStore;
+  readonly orgStore: InMemoryOrganizationsStore;
+  readonly workStore: InMemoryWorkStore;
+  readonly policyStore: InMemoryPoliciesStore;
+  readonly approvalStore: InMemoryApprovalStore;
+  readonly auth: AuthModule;
+  readonly organizations: OrganizationsModule;
+  readonly work: WorkModule;
+  readonly policies: PoliciesModule;
+  readonly approvals: ApprovalsModule;
+}
+
+export function buildApprovalsApp(
+  options: {
+    now?: () => Date;
+    workStoreOptions?: InMemoryWorkStoreOptions;
+    policyStoreOptions?: InMemoryPoliciesStoreOptions;
+    approvalStoreOptions?: InMemoryApprovalStoreOptions;
+  } = {},
+): ApprovalAuthorityApp {
+  const now = options.now ?? (() => new Date());
+  const identity = buildIdentityApp({ now });
+  const workStore = new InMemoryWorkStore({ now, ...options.workStoreOptions });
+  const work = createWorkModule({ store: workStore, tenancy: identity.organizations, now });
+  const policyStore = new InMemoryPoliciesStore({ now, ...options.policyStoreOptions });
+  const policies = createPoliciesModule({ store: policyStore, tenancy: identity.organizations, now });
+  const approvalStore = new InMemoryApprovalStore({ now, ...options.approvalStoreOptions });
+  const approvals = createApprovalsModule({
+    store: approvalStore,
+    tenancy: identity.organizations,
+    work,
+    policies,
+    now,
+  });
+  return {
+    authStore: identity.authStore,
+    orgStore: identity.orgStore,
+    workStore,
+    policyStore,
+    approvalStore,
+    auth: identity.auth,
+    organizations: identity.organizations,
+    work,
+    policies,
+    approvals,
   };
 }

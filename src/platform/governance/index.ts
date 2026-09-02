@@ -61,6 +61,15 @@ export {
   type EvidenceBoundaryCheckOptions,
 } from './evidence-boundary-checks.js';
 export {
+  checkApprovalsBoundaries,
+  RESERVED_APPROVAL_AUTHORITY_EXPORTS,
+  RESERVED_AI_APPROVAL_EXPORTS,
+  APPROVALS_ALLOWED_IMPORTS,
+  APPROVALS_IMPORTERS,
+  APPROVALS_SCHEMA_COLUMN_DENYLIST,
+  type ApprovalsBoundaryCheckOptions,
+} from './approvals-boundary-checks.js';
+export {
   checkPoliciesBoundaries,
   RESERVED_POLICY_AUTHORITY_EXPORTS,
   RESERVED_AI_POLICY_EXPORTS,
