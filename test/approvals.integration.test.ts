@@ -223,12 +223,15 @@ function decideInput(app: LiveApp, requestId: string, key: string, over: Partial
 }
 
 /**
- * A rejection validator for assert.rejects: asserts the typed code and
- * returns TRUE (node's assert.rejects requires a truthy validation
- * return; an async validator resolving undefined fails even when the
- * error matched — the CI live-verification defect of the first run).
+ * A SYNCHRONOUS rejection validator for assert.rejects: asserts the
+ * typed code and returns true. (Node's assert.rejects does NOT await
+ * an async validation function — it requires a truthy synchronous
+ * return; an async validator returns a Promise object and fails with
+ * "The validation function is expected to return 'true'" even when
+ * the caught error matched — the CI live-verification defect class of
+ * the first two runs, 33659722044 and 33660272203.)
  */
-async function expectCode(error: unknown, code: string): Promise<boolean> {
+function expectCode(error: unknown, code: string): boolean {
   assert.ok(error instanceof ApprovalError, `expected ApprovalError, got ${String(error)}`);
   assert.equal(error.code, code);
   return true;
@@ -554,7 +557,7 @@ test('TRUE parallel approve/reject over real SQL: ONE terminal decision, the los
     assert.equal(fulfilled.length, 1, 'exactly one decision wins');
     assert.equal(failed.length, 1, 'exactly one decision loses');
     if (failed[0]?.status === 'rejected') {
-      await expectCode(failed[0].reason, 'APPROVAL_DECISION_CONFLICT');
+      expectCode(failed[0].reason, 'APPROVAL_DECISION_CONFLICT');
     }
     // EXACTLY one decision row exists — the unique backstop held under
     // a true race.
