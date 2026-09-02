@@ -1,6 +1,6 @@
 # WORK-007
 
-Status: in_flight
+Status: complete
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: CRITICAL
@@ -68,7 +68,7 @@ See TEMPLATE.md.
 
 ## Evidence
 
-Status: implemented; CI green at final evidence head `2ec047a` (2ec047a242aeee747ea9e35fd4952765a04cde88) on PR #52, run `33598399215` (Architect verification substantively satisfied per the review of `2ec047a`; merge pending this evidence-record correction and its CI rerun — see "Evidence-record correction" below).
+Status: implemented and Architect-approved; final implementation revision `d788cf1a662be5cba5c46f44b4cf82410acaf09b` on PR #52, merged as `82d03b5277da29b7d846bb25a51c9efa6012d988`.
 
 ### What was implemented
 
@@ -90,22 +90,27 @@ The first CI run of the implementation head (run 33596641918, commit a0a714a) fa
 
 1. **TEST defect — nondeterministic ledger order**: the flow proof's fixed clock gave both decisions the same `decided_at`, so the latest-decision read tie-broke on random surrogate UUIDs (`ORDER BY decided_at, id`). The live app's default clock now ADVANCES one second per read (every durable write pins a distinct instant; attachment/decision order is deterministic). The moving-clock proof still injects its own real clock.
 2. **TEST defect — race-script content-slot reuse**: the TRUE-parallel divergent race re-used the base fact content already attached by the first section, so side A legitimately CONTENT-converged on the earlier row (correct store behavior) and side B inserted its divergent payload freely — both sides succeeded. Each race stage now uses a fresh fact domain (the WORK-005 fresh-slot lesson applied to the content slot).
-3. **HARNESS repair — pre-existing pool-teardown flake class**: `DROP DATABASE WITH (FORCE)` in any sibling teardown terminates idle pooled clients; pg then emits an unhandled pool `'error'` event that lands as an uncaught exception attributed to whichever test is running (the failure class the service-work test file already documents in its drain comment; the previous green runs never hit it). All test pools are now created through `createTestPool` (live-database helper) with a no-op `'error'` listener — teardown noise stays non-fatal while real query failures still reject their promises.
+3. **HARNESS repair — pre-existing pool-teardown flake class**: `DROP DATABASE WITH (FORCE)` in any sibling teardown terminates idle pooled clients; pg then emits an unhandled pool 'error' event that lands as an uncaught exception attributed to whichever test is running (the failure class the service-work test file already documents in its drain comment; the previous green runs never hit it). All test pools are now created through `createTestPool` (live-database helper) with a no-op 'error' listener — teardown noise stays non-fatal while real query failures still reject their promises.
 
 A second run (33597467909) then failed one ZECK-era live proof (the parallel divergent race: 2 rejections instead of 1). Root cause (commit 432399a): the parallel proof's two gateway doubles generate execution references through independent counters that land in the SAME tenant tables — when the race's sections are won by different sides, the fresh double's counter restarts at 1 and its attach collides with the OTHER gateway's already-pinned reference (the winner rejects REFERENCE_CONFLICT alongside the loser's IDEMPOTENCY_INPUT_CONFLICT; which racer wins a section decides whether the namespaces collide — timing-dependent, not deterministic). The doubles' purpose-built `executionPrefix` now namespaces gatewayB and the misbehaving gateway, making every gateway's references globally unique under any race outcome.
 
 ### Verification results
 
 - `npm run build` — PASS.
-- `npm run check` (build + config + architecture structural checks incl. the new evidence boundary checks + governance state + `scripts/governance-check.py`) — PASS.
+- `npm run check` (build + config + architecture structural checks incl. the new evidence boundary checks + governance state + `scripts/governance-check.py`) — PASS before merge.
 - `npm test` locally — 742 tests / 658 pass / 0 fail / 84 skipped (the 84 live-PostgreSQL proofs execute in CI only; no local PostgreSQL in the implementation environment).
 - Composition-root smoke — truthful startup (`evidenceAuthority: composed`, 16 modules, exit 0 on SIGTERM).
-- CI run 33598399215 at final evidence head `2ec047a` (2ec047a242aeee747ea9e35fd4952765a04cde88) — repository-governance PASS, foundation PASS: **742/742 tests, 0 fail, 0 skipped**, including all 84 live-PostgreSQL proofs and all 9 WORK-007 live proofs (foundation job log: `# tests 742 / # pass 742 / # fail 0 / # skipped 0`).
-- Historical, superseded as verification evidence by the final head/run above: CI run 33598190423 at head `432399a` — both jobs PASS with the identical 742/742 result; this was the implementation head immediately before the evidence-recording commit `2ec047a` and the convergence point of the defect history above. The earlier failed runs (33596641918 at `a0a714a`, 33597467909 at `7bc40f1`) remain recorded above as historical defects.
+- CI run 33598399215 at final substantive evidence head `2ec047a242aeee747ea9e35fd4952765a04cde88` — repository-governance PASS, foundation PASS: **742/742 tests, 0 fail, 0 skipped**, including all 84 live-PostgreSQL proofs and all 9 WORK-007 live proofs.
+- CI run 33618519700 at final correction head `d788cf1a662be5cba5c46f44b4cf82410acaf09b` — repository-governance PASS, foundation PASS: **742/742 tests, 0 fail, 0 skipped**, including all 84 live-PostgreSQL proofs and all 9 WORK-007 live proofs. This exact-head rerun satisfied the Architect evidence-record correction gate.
+- Historical, superseded as verification evidence: CI run 33598190423 at head `432399a` — both jobs PASS with the identical 742/742 result; this was the implementation head immediately before the evidence-recording commit `2ec047a`. The earlier failed runs (33596641918 at `a0a714a`, 33597467909 at `7bc40f1`) remain recorded above as historical defects.
 
 ### Evidence-record correction
 
-The Architect review of `2ec047a` (PR #52) found this Evidence section still pointing its verification evidence at the pre-evidence head `432399a` / run `33598190423`, while the actual final PR evidence head/run was `2ec047a` / `33598399215`. The Status and Verification results pointers were corrected accordingly in this commit; the failed-run history above is preserved unchanged as historical defects, per the review's requirement. The correction is evidence-record consistency only — no architecture, implementation, schema, or test change — and its own CI rerun is the merge gate required by that review.
+The Architect review of `2ec047a` (PR #52) found this Evidence section still pointing its verification evidence at the pre-evidence head `432399a` / run `33598190423`, while the actual final PR evidence head/run was `2ec047a` / `33598399215`. The Status and Verification results pointers were corrected accordingly in commit `d788cf1a662be5cba5c46f44b4cf82410acaf09b`; the failed-run history is preserved unchanged as historical defects. The correction is evidence-record consistency only — no architecture, implementation, schema, or test change — and exact-head CI rerun `33618519700` passed.
+
+### Architect verification and finalization
+
+The Architect independently verified the corrected durable evidence record, the exact correction head `d788cf1a662be5cba5c46f44b4cf82410acaf09b`, and exact-head CI run `33618519700`. PR #52 was approved for merge under the Architect protocol and merged as `82d03b5277da29b7d846bb25a51c9efa6012d988`. This Work Order is complete; the canonical frontier now advances to `WORK-008` and no Work Order remains in flight.
 
 ### Known limitations
 
@@ -114,4 +119,3 @@ The Architect review of `2ec047a` (PR #52) found this Evidence section still poi
 - The deterministic mapping counts evidence by requirement name only (no attribute predicates): vertical-specific matching rules are forbidden by this Work Order's scope and belong to the flow/vertical Work Orders (WORK-010) composing richer contracts atop this primitive; outcome output values are the attempt results' concern (the contract's outputSchema validation is /services' authority).
 - Verification-mode values are business metadata recorded with the decision (they do not switch evaluation paths — every mode maps through the same deterministic evidence rule; the mode enumerates how the business chose to source evidence, mirroring /services' declared contract).
 - No HTTP/control-plane surface (WORK-012); the execution-flow orchestration (who attaches evidence when, and how verification decisions drive Service Work transitions) is WORK-010 territory — /evidence records decisions, never transitions.
-- The activated future-roadmap state repair (WORK-007 removed from the future-only sequence/waves) completes the Architect's recorded activation transition mechanically; any divergence from the intended activation state remains the Architect's call at review.
