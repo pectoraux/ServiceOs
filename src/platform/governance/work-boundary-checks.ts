@@ -115,6 +115,11 @@ export const ALLOWED_MIGRATION_TABLE_PREFIXES: readonly string[] = [
   // verification decision ledger — no lifecycle, no parallel AI
   // execution evidence store, checked by checkEvidenceBoundaries).
   'evidence_',
+  // WORK-006 owns the durable event substrate tables (migration 0011:
+  // the deduplicated external event inbox + the outbound event outbox —
+  // frozen horizontal event vocabularies, no AI/credential columns,
+  // checked by checkEventBoundaries).
+  'event_',
   // WORK-008 owns the /approvals tables (migration 0010: the approval
   // request ledger + the one-terminal-decision immutable approval
   // decision ledger — no AI/agent decider surface, no credentials,

@@ -140,6 +140,7 @@ test('the adapter is invoked only after the durable intent and claim exist', asy
   };
   const module = createInteractionsModule({
     store,
+    eventsStore: b.app.eventsStore,
     tenancy: b.app.organizations,
     policies: b.app.policies,
     sink: verifyingSink,

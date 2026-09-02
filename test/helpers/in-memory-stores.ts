@@ -83,6 +83,34 @@ import {
   type RecordObservationInput,
 } from '../../src/modules/interactions/index.js';
 import {
+  createInMemoryEventDelivery,
+  EventsStoreMissingError,
+  EventsStoreRuleError,
+  computeInboxEventRecordHash,
+  computeOutboxEventRecordHash,
+  type ClaimInboxEventInput,
+  type ClaimOutboxEventInput,
+  type EventsStoreRule,
+  type CompleteInboxEventInput,
+  type CompleteOutboxDispatchInput,
+  type CreateOutboxEventInput,
+  type EventDeliveryPort,
+  type EventsStore,
+  type FailInboxEventInput,
+  type FailOutboxDispatchInput,
+  type InMemoryEventDelivery,
+  type InboxEventFilter,
+  type InboxEventRecord,
+  type InboxEventState,
+  type IngestInboxEventInput,
+  type OutboxEventFilter,
+  type OutboxEventRecord,
+  type OutboxEventState,
+  type ReclaimInboxEventInput,
+  type ReclaimOutboxDispatchInput,
+  type RetryInboxEventInput,
+} from '../../src/modules/interactions/index.js';
+import {
   createAdapterRegistry,
   createEffectSink,
   createInMemoryProviderAdapter,
@@ -1951,6 +1979,477 @@ export class InMemoryNotificationsStore implements NotificationsStore {
 }
 
 // ---------------------------------------------------------------------------
+// In-memory event-substrate store (WORK-006)
+// ---------------------------------------------------------------------------
+
+type MutableInboxEvent = Mutable<InboxEventRecord>;
+type MutableOutboxEvent = Mutable<OutboxEventRecord>;
+
+export interface InMemoryEventsStoreOptions {
+  now?: () => Date;
+  /** Race-injection points before the synchronous critical sections. */
+  beforeIngestInboxEvent?: () => Promise<void>;
+  beforeClaimInboxEvent?: () => Promise<void>;
+  beforeCompleteInboxEvent?: () => Promise<void>;
+  beforeCreateOutboxEvent?: () => Promise<void>;
+  beforeClaimOutboxEvent?: () => Promise<void>;
+  beforeCompleteOutboxDispatch?: () => Promise<void>;
+  /**
+   * CRASH SIMULATION: `crashAfterInboxClaim` performs the inbox claim
+   * mutation then throws (process death INSIDE the claim critical
+   * section — the claim stands, the consumer never runs); the
+   * `crashAfterOutboxClaim` / `crashBeforeOutboxComplete` pair brackets
+   * the outbox dispatch window (claimed, delivery attempted or accepted,
+   * completion never recorded).
+   */
+  crashAfterInboxClaim?: boolean;
+  crashAfterOutboxClaim?: boolean;
+  crashBeforeOutboxComplete?: boolean;
+  /** Fire the crash hooks only ONCE (the recovery call must survive). */
+  oneShotCrash?: boolean;
+}
+
+/**
+ * Faithful in-memory implementation of the /interactions event-substrate
+ * store port (WORK-006). NOT a second persistence authority: it
+ * implements the same contract the SQL event store implements, so the
+ * substrate's dedup, claim CAS, completion and convergence semantics are
+ * proven without a live PostgreSQL:
+ *
+ * - every read is tenant-predicated exactly like the SQL store;
+ * - `reads` counters prove denials happen before domain data access;
+ * - every mutation performs its check+mutate sequence inside ONE
+ *   synchronous critical section (the semantics of the locked SQL
+ *   transaction); async hooks inject deterministic interleaving points
+ *   BEFORE the critical section; post-mutation crash hooks simulate
+ *   process death between the durable write and the module's next step;
+ * - the same typed rule/missing errors as the SQL store, with the same
+ *   state names carried in the messages;
+ * - every read recomputes the record integrity hash (tamper-evident,
+ *   exactly like the SQL store's mappers).
+ */
+export class InMemoryEventsStore implements EventsStore {
+  readonly inboxEvents = new Map<string, MutableInboxEvent>();
+  readonly inboxEventsByIdentity = new Map<string, string>();
+  readonly outboxEvents = new Map<string, MutableOutboxEvent>();
+  readonly outboxEventsByIdempotency = new Map<string, string>();
+  readonly reads = {
+    inboxEventById: 0,
+    inboxEventsList: 0,
+    outboxEventById: 0,
+    outboxEventsList: 0,
+  };
+  readonly options: InMemoryEventsStoreOptions;
+  private crashed = false;
+
+  constructor(options: InMemoryEventsStoreOptions = {}) {
+    this.options = options;
+  }
+
+  private now(): Date {
+    return this.options.now?.() ?? new Date();
+  }
+
+  private maybeCrash(which: 'inbox-claim' | 'outbox-claim' | 'outbox-complete'): void {
+    const map = { 'inbox-claim': 'crashAfterInboxClaim', 'outbox-claim': 'crashAfterOutboxClaim', 'outbox-complete': 'crashBeforeOutboxComplete' } as const;
+    const flag = this.options[map[which]];
+    if (flag === true && !(this.options.oneShotCrash === true && this.crashed)) {
+      this.crashed = true;
+      throw new Error(`SIMULATED CRASH after the ${which} mutation`);
+    }
+  }
+
+  /** Tenant-predicated row lookup with integrity verification. */
+  private inboxRow(tenantId: string, eventId: string): MutableInboxEvent | null {
+    const row = this.inboxEvents.get(eventId);
+    if (row === undefined || row.tenantId !== tenantId) return null;
+    this.verifyInbox(row);
+    return row;
+  }
+
+  private outboxRow(tenantId: string, eventId: string): MutableOutboxEvent | null {
+    const row = this.outboxEvents.get(eventId);
+    if (row === undefined || row.tenantId !== tenantId) return null;
+    this.verifyOutbox(row);
+    return row;
+  }
+
+  private verifyInbox(row: MutableInboxEvent): void {
+    if (computeInboxEventRecordHash(row) !== row.recordHash) {
+      throw new EventsStoreRuleError(
+        `inbox event ${row.id} record no longer matches its integrity hash`,
+        'event-record-tampered',
+      );
+    }
+  }
+
+  private verifyOutbox(row: MutableOutboxEvent): void {
+    if (computeOutboxEventRecordHash(row) !== row.recordHash) {
+      throw new EventsStoreRuleError(
+        `outbox event ${row.id} record no longer matches its integrity hash`,
+        'event-record-tampered',
+      );
+    }
+  }
+
+  protected rehashInbox(row: MutableInboxEvent): void {
+    row.recordHash = computeInboxEventRecordHash(row);
+  }
+
+  protected rehashOutbox(row: MutableOutboxEvent): void {
+    row.recordHash = computeOutboxEventRecordHash(row);
+  }
+
+  protected copyInbox(row: MutableInboxEvent): InboxEventRecord {
+    return { ...row, payload: row.payload, claim: row.claim ? { ...row.claim } : null };
+  }
+
+  protected copyOutbox(row: MutableOutboxEvent): OutboxEventRecord {
+    return {
+      ...row,
+      correlation: { ...row.correlation },
+      claim: row.claim ? { ...row.claim } : null,
+      dispatch: row.dispatch ? { ...row.dispatch } : null,
+    };
+  }
+
+  private assertInboxState(row: MutableInboxEvent, expected: InboxEventState, rule: EventsStoreRule): void {
+    if (row.state !== expected) {
+      throw new EventsStoreRuleError(
+        `inbox event ${row.id} is in state "${row.state}", not the expected "${expected}"`,
+        rule,
+      );
+    }
+  }
+
+  private assertOutboxState(row: MutableOutboxEvent, expected: OutboxEventState, rule: EventsStoreRule): void {
+    if (row.state !== expected) {
+      throw new EventsStoreRuleError(
+        `outbox event ${row.id} is in state "${row.state}", not the expected "${expected}"`,
+        rule,
+      );
+    }
+  }
+
+  async ingestInboxEvent(input: IngestInboxEventInput): Promise<{ event: InboxEventRecord; converged: boolean }> {
+    await this.options.beforeIngestInboxEvent?.();
+    const identityKey = `${input.tenantId}:${input.source}:${input.externalEventId}`;
+    // Synchronous critical section (SQL: identity lookup + ON CONFLICT
+    // DO NOTHING insert + re-read convergence).
+    const existingId = this.inboxEventsByIdentity.get(identityKey);
+    if (existingId !== undefined) {
+      const existing = this.inboxEvents.get(existingId);
+      if (existing !== undefined) {
+        this.verifyInbox(existing);
+        if (existing.deliveryHash !== input.deliveryHash) {
+          throw new EventsStoreRuleError(
+            `external event identity (source ${input.source}, id "${input.externalEventId}") was already recorded with a different delivery`,
+            'event-delivery-conflict',
+          );
+        }
+        return { event: this.copyInbox(existing), converged: true };
+      }
+    }
+    const base: Omit<MutableInboxEvent, 'recordHash'> = {
+      id: randomUUID(),
+      tenantId: input.tenantId,
+      source: input.source,
+      externalEventId: input.externalEventId,
+      eventType: input.eventType,
+      occurredAt: input.occurredAt,
+      payload: input.payload,
+      deliveryHash: input.deliveryHash,
+      state: input.rejection === null ? 'received' : 'rejected',
+      rejection: input.rejection === null ? null : { code: input.rejection, rejectedAt: input.now },
+      claim: null,
+      consumption: null,
+      failure: null,
+      receivedBy: input.receivedBy,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+    const row: MutableInboxEvent = { ...base, recordHash: '' };
+    this.rehashInbox(row);
+    this.inboxEvents.set(row.id, row);
+    this.inboxEventsByIdentity.set(identityKey, row.id);
+    return { event: this.copyInbox(row), converged: false };
+  }
+
+  async findInboxEvent(tenantId: string, eventId: string): Promise<InboxEventRecord | null> {
+    this.reads.inboxEventById += 1;
+    const row = this.inboxRow(tenantId, eventId);
+    return row === null ? null : this.copyInbox(row);
+  }
+
+  async listInboxEvents(tenantId: string, filter?: InboxEventFilter): Promise<InboxEventRecord[]> {
+    this.reads.inboxEventsList += 1;
+    return [...this.inboxEvents.values()]
+      .filter(
+        (row) =>
+          row.tenantId === tenantId &&
+          (filter?.state === undefined || row.state === filter.state) &&
+          (filter?.source === undefined || row.source === filter.source),
+      )
+      .sort((a, b) => (a.createdAt.getTime() === b.createdAt.getTime() ? (a.id < b.id ? -1 : 1) : a.createdAt.getTime() - b.createdAt.getTime()))
+      .map((row) => {
+        this.verifyInbox(row);
+        return this.copyInbox(row);
+      });
+  }
+
+  async listClaimableInboxEvents(tenantId: string, limit: number): Promise<InboxEventRecord[]> {
+    this.reads.inboxEventsList += 1;
+    return [...this.inboxEvents.values()]
+      .filter((row) => row.tenantId === tenantId && row.state === 'received')
+      .sort((a, b) => (a.createdAt.getTime() === b.createdAt.getTime() ? (a.id < b.id ? -1 : 1) : a.createdAt.getTime() - b.createdAt.getTime()))
+      .slice(0, limit)
+      .map((row) => {
+        this.verifyInbox(row);
+        return this.copyInbox(row);
+      });
+  }
+
+  async listRecoverableInboxEvents(tenantId: string): Promise<InboxEventRecord[]> {
+    this.reads.inboxEventsList += 1;
+    return [...this.inboxEvents.values()]
+      .filter((row) => row.tenantId === tenantId && row.state === 'processing')
+      .sort((a, b) => {
+        const aa = a.claim?.claimedAt.getTime() ?? 0;
+        const bb = b.claim?.claimedAt.getTime() ?? 0;
+        return aa === bb ? (a.id < b.id ? -1 : 1) : aa - bb;
+      })
+      .map((row) => {
+        this.verifyInbox(row);
+        return this.copyInbox(row);
+      });
+  }
+
+  async claimInboxEvent(input: ClaimInboxEventInput): Promise<InboxEventRecord> {
+    await this.options.beforeClaimInboxEvent?.();
+    const row = this.inboxRow(input.tenantId, input.eventId);
+    if (row === null) {
+      throw new EventsStoreMissingError(`inbox event ${input.eventId} does not exist in this tenant`, 'inbox-event');
+    }
+    this.assertInboxState(row, 'received', 'inbox-claim-conflict');
+    row.state = 'processing';
+    row.claim = { claimedBy: input.claimedBy, claimedAt: input.now };
+    row.updatedAt = input.now;
+    this.rehashInbox(row);
+    this.maybeCrash('inbox-claim');
+    return this.copyInbox(row);
+  }
+
+  async retryInboxEvent(input: RetryInboxEventInput): Promise<InboxEventRecord> {
+    const row = this.inboxRow(input.tenantId, input.eventId);
+    if (row === null) {
+      throw new EventsStoreMissingError(`inbox event ${input.eventId} does not exist in this tenant`, 'inbox-event');
+    }
+    this.assertInboxState(row, 'failed', 'inbox-retry-conflict');
+    row.state = 'processing';
+    row.claim = { claimedBy: input.retriedBy, claimedAt: input.now };
+    row.failure = null;
+    row.updatedAt = input.now;
+    this.rehashInbox(row);
+    return this.copyInbox(row);
+  }
+
+  async reclaimInboxEvent(input: ReclaimInboxEventInput): Promise<InboxEventRecord> {
+    const row = this.inboxRow(input.tenantId, input.eventId);
+    if (row === null) {
+      throw new EventsStoreMissingError(`inbox event ${input.eventId} does not exist in this tenant`, 'inbox-event');
+    }
+    this.assertInboxState(row, 'processing', 'inbox-reclaim-conflict');
+    row.claim = { claimedBy: input.reclaimedBy, claimedAt: input.now };
+    row.updatedAt = input.now;
+    this.rehashInbox(row);
+    return this.copyInbox(row);
+  }
+
+  async completeInboxEvent(input: CompleteInboxEventInput): Promise<InboxEventRecord> {
+    await this.options.beforeCompleteInboxEvent?.();
+    const row = this.inboxRow(input.tenantId, input.eventId);
+    if (row === null) {
+      throw new EventsStoreMissingError(`inbox event ${input.eventId} does not exist in this tenant`, 'inbox-event');
+    }
+    this.assertInboxState(row, 'processing', 'inbox-completion-conflict');
+    row.state = 'consumed';
+    row.consumption = {
+      result: input.result,
+      consumedBy: input.consumedBy,
+      consumedAt: input.now,
+    };
+    row.failure = null;
+    row.updatedAt = input.now;
+    this.rehashInbox(row);
+    return this.copyInbox(row);
+  }
+
+  async failInboxEvent(input: FailInboxEventInput): Promise<InboxEventRecord> {
+    const row = this.inboxRow(input.tenantId, input.eventId);
+    if (row === null) {
+      throw new EventsStoreMissingError(`inbox event ${input.eventId} does not exist in this tenant`, 'inbox-event');
+    }
+    this.assertInboxState(row, 'processing', 'inbox-completion-conflict');
+    row.state = 'failed';
+    row.failure = {
+      code: input.code,
+      message: input.message,
+      failedAt: input.now,
+    };
+    row.updatedAt = input.now;
+    this.rehashInbox(row);
+    return this.copyInbox(row);
+  }
+
+  async createOutboxEvent(input: CreateOutboxEventInput): Promise<{ event: OutboxEventRecord; converged: boolean }> {
+    await this.options.beforeCreateOutboxEvent?.();
+    // Keyed fast-path convergence: a retry re-observes the durable event
+    // before anything else (synchronous critical section).
+    if (input.idempotencyKey !== null) {
+      const existingId = this.outboxEventsByIdempotency.get(`${input.tenantId}:${input.idempotencyKey}`);
+      if (existingId !== undefined) {
+        const existing = this.outboxEvents.get(existingId);
+        if (existing !== undefined) {
+          this.verifyOutbox(existing);
+          if (existing.inputHash !== input.inputHash) {
+            throw new EventsStoreRuleError(
+              `idempotency key "${input.idempotencyKey}" was already used for a different outbound event input`,
+              'outbox-input-conflict',
+            );
+          }
+          return { event: this.copyOutbox(existing), converged: true };
+        }
+      }
+    }
+    const base: Omit<MutableOutboxEvent, 'recordHash'> = {
+      id: randomUUID(),
+      tenantId: input.tenantId,
+      eventType: input.eventType,
+      payload: input.payload,
+      destination: input.destination,
+      correlation: input.correlation ?? {},
+      policy: input.policy,
+      requestedBy: input.requestedBy,
+      idempotencyKey: input.idempotencyKey,
+      inputHash: input.inputHash,
+      state: 'intended',
+      claim: null,
+      dispatch: null,
+      failure: null,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+    const row: MutableOutboxEvent = { ...base, recordHash: '' };
+    this.rehashOutbox(row);
+    this.outboxEvents.set(row.id, row);
+    if (input.idempotencyKey !== null) {
+      this.outboxEventsByIdempotency.set(`${input.tenantId}:${input.idempotencyKey}`, row.id);
+    }
+    return { event: this.copyOutbox(row), converged: false };
+  }
+
+  async findOutboxEvent(tenantId: string, eventId: string): Promise<OutboxEventRecord | null> {
+    this.reads.outboxEventById += 1;
+    const row = this.outboxRow(tenantId, eventId);
+    return row === null ? null : this.copyOutbox(row);
+  }
+
+  async listOutboxEvents(tenantId: string, filter?: OutboxEventFilter): Promise<OutboxEventRecord[]> {
+    this.reads.outboxEventsList += 1;
+    return [...this.outboxEvents.values()]
+      .filter(
+        (row) =>
+          row.tenantId === tenantId &&
+          (filter?.state === undefined || row.state === filter.state),
+      )
+      .sort((a, b) => (a.createdAt.getTime() === b.createdAt.getTime() ? (a.id < b.id ? -1 : 1) : a.createdAt.getTime() - b.createdAt.getTime()))
+      .map((row) => {
+        this.verifyOutbox(row);
+        return this.copyOutbox(row);
+      });
+  }
+
+  async listRecoverableOutboxEvents(tenantId: string): Promise<OutboxEventRecord[]> {
+    this.reads.outboxEventsList += 1;
+    return [...this.outboxEvents.values()]
+      .filter((row) => row.tenantId === tenantId && row.state === 'dispatching')
+      .sort((a, b) => {
+        const aa = a.claim?.claimedAt.getTime() ?? 0;
+        const bb = b.claim?.claimedAt.getTime() ?? 0;
+        return aa === bb ? (a.id < b.id ? -1 : 1) : aa - bb;
+      })
+      .map((row) => {
+        this.verifyOutbox(row);
+        return this.copyOutbox(row);
+      });
+  }
+
+  async claimOutboxEvent(input: ClaimOutboxEventInput): Promise<OutboxEventRecord> {
+    await this.options.beforeClaimOutboxEvent?.();
+    const row = this.outboxRow(input.tenantId, input.eventId);
+    if (row === null) {
+      throw new EventsStoreMissingError(`outbox event ${input.eventId} does not exist in this tenant`, 'outbox-event');
+    }
+    this.assertOutboxState(row, 'intended', 'outbox-claim-conflict');
+    row.state = 'dispatching';
+    row.claim = { claimedBy: input.claimedBy, claimedAt: input.now };
+    row.updatedAt = input.now;
+    this.rehashOutbox(row);
+    this.maybeCrash('outbox-claim');
+    return this.copyOutbox(row);
+  }
+
+  async completeOutboxDispatch(input: CompleteOutboxDispatchInput): Promise<OutboxEventRecord> {
+    await this.options.beforeCompleteOutboxDispatch?.();
+    this.maybeCrash('outbox-complete');
+    const row = this.outboxRow(input.tenantId, input.eventId);
+    if (row === null) {
+      throw new EventsStoreMissingError(`outbox event ${input.eventId} does not exist in this tenant`, 'outbox-event');
+    }
+    this.assertOutboxState(row, 'dispatching', 'outbox-completion-conflict');
+    row.state = 'dispatched';
+    row.dispatch = {
+      provider: input.provider,
+      providerReference: input.providerReference,
+      dispatchedAt: input.now,
+      dispatchedBy: input.dispatchedBy,
+    };
+    row.updatedAt = input.now;
+    this.rehashOutbox(row);
+    return this.copyOutbox(row);
+  }
+
+  async failOutboxDispatch(input: FailOutboxDispatchInput): Promise<OutboxEventRecord> {
+    const row = this.outboxRow(input.tenantId, input.eventId);
+    if (row === null) {
+      throw new EventsStoreMissingError(`outbox event ${input.eventId} does not exist in this tenant`, 'outbox-event');
+    }
+    this.assertOutboxState(row, 'dispatching', 'outbox-completion-conflict');
+    row.state = 'failed';
+    row.failure = {
+      code: 'DELIVERY_FAILED',
+      message: input.error,
+      failedAt: input.now,
+    };
+    row.updatedAt = input.now;
+    this.rehashOutbox(row);
+    return this.copyOutbox(row);
+  }
+
+  async reclaimOutboxDispatch(input: ReclaimOutboxDispatchInput): Promise<OutboxEventRecord> {
+    const row = this.outboxRow(input.tenantId, input.eventId);
+    if (row === null) {
+      throw new EventsStoreMissingError(`outbox event ${input.eventId} does not exist in this tenant`, 'outbox-event');
+    }
+    this.assertOutboxState(row, 'dispatching', 'outbox-reclaim-conflict');
+    row.claim = { claimedBy: input.reclaimedBy, claimedAt: input.now };
+    row.updatedAt = input.now;
+    this.rehashOutbox(row);
+    return this.copyOutbox(row);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // WORK-015 app builders
 // ---------------------------------------------------------------------------
 
@@ -1966,8 +2465,10 @@ export interface InteractionsApp {
   orgStore: InMemoryOrganizationsStore;
   policyStore: InMemoryPoliciesStore;
   interactionsStore: InMemoryInteractionsStore;
+  eventsStore: InMemoryEventsStore;
   registry: AdapterRegistry;
   sink: ExternalEffectSink;
+  eventDelivery: InMemoryEventDelivery;
   auth: AuthModule;
   organizations: OrganizationsModule;
   policies: PoliciesModule;
@@ -1980,6 +2481,9 @@ export function buildInteractionsApp(
     capabilities?: readonly CapabilityClass[];
     sink?: ExternalEffectSink;
     storeOptions?: InMemoryInteractionsStoreOptions;
+    eventsStoreOptions?: InMemoryEventsStoreOptions;
+    /** Overrides the default in-memory event delivery double (WORK-006). */
+    eventDelivery?: InMemoryEventDelivery;
   } = {},
 ): InteractionsApp {
   const now = options.now ?? (() => new Date());
@@ -1994,8 +2498,12 @@ export function buildInteractionsApp(
   registry.seal();
   const sink = options.sink ?? createEffectSink(registry);
   const interactionsStore = new InMemoryInteractionsStore({ now, ...options.storeOptions });
+  const eventsStore = new InMemoryEventsStore({ now, ...options.eventsStoreOptions });
+  const eventDelivery = options.eventDelivery ?? createInMemoryEventDelivery({ now });
   const interactions = createInteractionsModule({
     store: interactionsStore,
+    eventsStore,
+    eventDelivery,
     tenancy: identity.organizations,
     policies,
     sink,
@@ -2006,8 +2514,10 @@ export function buildInteractionsApp(
     orgStore: identity.orgStore,
     policyStore,
     interactionsStore,
+    eventsStore,
     registry,
     sink,
+    eventDelivery,
     auth: identity.auth,
     organizations: identity.organizations,
     policies,

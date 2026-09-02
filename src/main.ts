@@ -140,7 +140,8 @@ export async function main(): Promise<void> {
   adapterRegistry.seal();
   const effectSink = createEffectSink(adapterRegistry);
 
-  // External interaction authority (/interactions, WORK-015): the ONE
+  // External interaction authority (/interactions, WORK-015 + WORK-006
+  // durable event substrate): the ONE
   // durable business side-effect boundary (authorization -> durable
   // intent -> dispatch -> observed result; business outcome authority
   // decides separately). It consumes the single authorization chain and
@@ -293,6 +294,7 @@ export async function main(): Promise<void> {
     policyAuthority: policiesModule !== null ? 'composed' : 'missing',
     workflowAuthority: workflowModule !== null ? 'composed' : 'missing',
     interactionsAuthority: interactionsModule !== null ? 'composed' : 'missing',
+    eventSubstrate: 'composed (inbox + outbox; delivery closed: no port)',
     notificationsAuthority: notificationsModule !== null ? 'composed' : 'missing',
     verticalsAuthority: verticalsModule !== null ? 'composed' : 'missing',
     servicesAuthority: servicesModule !== null ? 'composed' : 'missing',

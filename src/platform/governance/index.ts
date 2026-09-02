@@ -115,3 +115,11 @@ export {
   NOTIFICATIONS_ALLOWED_IMPORTS,
   type ExternalInteractionBoundaryCheckOptions,
 } from './interactions-boundary-checks.js';
+export {
+  checkEventBoundaries,
+  RESERVED_EVENT_AUTHORITY_EXPORTS,
+  RESERVED_EVENT_DELIVERY_EXPORTS,
+  RESERVED_EVENT_CONSUMER_EXPORTS,
+  EVENT_SCHEMA_COLUMN_DENYLIST,
+  type EventBoundaryCheckOptions,
+} from './events-boundary-checks.js';

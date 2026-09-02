@@ -357,6 +357,8 @@ test('DISCRIMINATION: without the claim CAS, both dispatchers invoke the adapter
   for (const [id, row] of app.interactionsStore.interactions) mutatedStore.interactions.set(id, row);
   const mutatedModule = createInteractionsModule({
     store: mutatedStore,
+    eventsStore: app.eventsStore,
+    eventDelivery: app.eventDelivery,
     tenancy: app.organizations,
     policies: app.policies,
     sink: createEffectSink(registry),
