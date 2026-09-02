@@ -72,3 +72,7 @@ Required proof classes: `static`, `dynamic`, `discrimination`, `concurrency`.
 ## Governance Rule
 
 Only this Work Order may be in flight. Any architecture change requires a separate Architect decision and ADR before implementation. Zeck remains the sole AI execution authority.
+
+## Activation Gate Note
+
+Activation state was reconciled across main and the implementation branch before the exact-head governance rerun. The note exists only to force the repository governance workflow to execute again; it changes no scope or authority.
