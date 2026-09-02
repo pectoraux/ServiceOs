@@ -47,7 +47,7 @@ import { createAuthModule } from '../src/modules/auth/index.js';
 import { createOrganizationsModule } from '../src/modules/organizations/index.js';
 import { createVerticalsModule, VerticalsError } from '../src/modules/verticals/index.js';
 import { createServicesModule, ServicesError } from '../src/modules/services/index.js';
-import { createLiveTestDatabase, liveDatabaseRequested, type LiveDatabase } from './helpers/live-database.js';
+import { createLiveTestDatabase, createTestPool, liveDatabaseRequested, type LiveDatabase } from './helpers/live-database.js';
 import type { Principal } from '../src/modules/auth/index.js';
 
 const SKIP = !liveDatabaseRequested();
@@ -108,7 +108,7 @@ interface LiveApp {
 
 async function liveApp(): Promise<LiveApp> {
   const live = await createLiveTestDatabase();
-  const pool = new pg.Pool({ connectionString: live.dsn, max: 4 });
+  const pool = createTestPool({ connectionString: live.dsn, max: 4 });
   await applyMigrationsPinned(pool, migrations());
   const executor = poolExecutor(pool);
   const auth = createAuthModule({ executor });
@@ -404,8 +404,8 @@ test('TRUE parallel actors converge over real SQL (independent pooled clients)',
   try {
     // Two independent executors (separate pools) racing the same package
     // registration with the same content.
-    const poolA = new pg.Pool({ connectionString: app.live.dsn, max: 2 });
-    const poolB = new pg.Pool({ connectionString: app.live.dsn, max: 2 });
+    const poolA = createTestPool({ connectionString: app.live.dsn, max: 2 });
+    const poolB = createTestPool({ connectionString: app.live.dsn, max: 2 });
     const executorA = poolExecutor(poolA);
     const executorB = poolExecutor(poolB);
     const authA = createAuthModule({ executor: executorA });

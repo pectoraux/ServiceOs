@@ -64,7 +64,7 @@ import {
   type AttachEvidenceInput,
   type OutcomeContractInput,
 } from '../src/modules/evidence/index.js';
-import { createLiveTestDatabase, liveDatabaseRequested, type LiveDatabase } from './helpers/live-database.js';
+import { createLiveTestDatabase, createTestPool, liveDatabaseRequested, type LiveDatabase } from './helpers/live-database.js';
 import type { Principal } from '../src/modules/auth/index.js';
 
 const SKIP = !liveDatabaseRequested();
@@ -130,9 +130,22 @@ interface LiveApp {
   otherWorkId: string;
 }
 
-async function liveApp(now: () => Date = () => new Date('2026-09-02T12:00:00.000Z')): Promise<LiveApp> {
+/**
+ * The default clock ADVANCES one second per read: every durable write
+ * pins a distinct instant, so ledger order (attachment order, decision
+ * order — `ORDER BY <instant>, id`) is deterministic instead of
+ * tie-breaking on random surrogate ids (the CI live-verification
+ * defect class). The moving-clock proof injects its own real clock.
+ */
+function advancingClock(): () => Date {
+  const base = new Date('2026-09-02T12:00:00.000Z').getTime();
+  let tick = 0;
+  return () => new Date(base + tick++ * 1000);
+}
+
+async function liveApp(now: () => Date = advancingClock()): Promise<LiveApp> {
   const live = await createLiveTestDatabase();
-  const pool = new pg.Pool({ connectionString: live.dsn, max: 4 });
+  const pool = createTestPool({ connectionString: live.dsn, max: 4 });
   await applyMigrationsPinned(pool, migrations());
   const executor = poolExecutor(pool);
   const auth = createAuthModule({ executor });
@@ -222,7 +235,7 @@ async function evidenceError<T>(promise: Promise<T>): Promise<EvidenceError> {
 
 test('migrations apply in order and are idempotent (live schema)', { skip: SKIP }, async () => {
   const live = await createLiveTestDatabase();
-  const pool = new pg.Pool({ connectionString: live.dsn, max: 2 });
+  const pool = createTestPool({ connectionString: live.dsn, max: 2 });
   try {
     const first = await applyMigrationsPinned(pool, migrations());
     assert.equal(first.applied.length, 9, 'all nine migrations apply');
@@ -508,7 +521,7 @@ test('after-the-fact mutation of stored rows is detected on read (live tamper ev
 
 test('TRUE parallel actors converge over real SQL (independent pooled clients)', { skip: SKIP }, async () => {
   const app = await liveApp();
-  const poolB = new pg.Pool({ connectionString: app.live.dsn, max: 2 });
+  const poolB = createTestPool({ connectionString: app.live.dsn, max: 2 });
   const executorB = poolExecutor(poolB);
   const authB = createAuthModule({ executor: executorB });
   const organizationsB = createOrganizationsModule({ executor: executorB, authenticator: authB.authenticate, identity: authB });
@@ -529,15 +542,19 @@ test('TRUE parallel actors converge over real SQL (independent pooled clients)',
     const sameKeyRows = await app.pool.query(`SELECT COUNT(*)::int AS n FROM evidence_records WHERE tenant_id = $1 AND idempotency_key = 'parallel-same-key'`, [app.tenantId]);
     assert.equal((sameKeyRows.rows[0] as { n: number }).n, 1);
 
-    // Same-key DIVERGENT attaches on a fresh key: exactly one rejection.
+    // Same-key DIVERGENT attaches on a FRESH fact domain (a requirement
+    // no earlier section attached — otherwise side A would legitimately
+    // CONTENT-converge on an earlier row and both sides would succeed;
+    // the WORK-005 fresh-slot lesson): exactly one rejection.
+    const divergentFact = (claim: string) =>
+      evidenceInput(app, 'parallel-divergent', {
+        requirement: 'divergent_race_requirement',
+        provenance: { kind: 'operator_attestation', source: 'operator@race', refs: [] },
+        payload: { claim },
+      });
     const [div1, div2] = await Promise.allSettled([
-      app.evidence.attachEvidence(app.owner, evidenceInput(app, 'parallel-divergent')),
-      evidenceB.attachEvidence(
-        app.colleague,
-        evidenceInput(app, 'parallel-divergent', {
-          payload: { carrier: 'Forged Mutual', policy: 'XX', coverage: 1, expiresOn: '2030-01-01' },
-        }),
-      ),
+      app.evidence.attachEvidence(app.owner, divergentFact('A')),
+      evidenceB.attachEvidence(app.colleague, divergentFact('B')),
     ]);
     const failed = [div1, div2].filter((result) => result.status === 'rejected');
     assert.equal(failed.length, 1, 'exactly one rejection');

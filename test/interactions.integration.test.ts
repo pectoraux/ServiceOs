@@ -76,7 +76,7 @@ import {
   createNotificationsModule,
   type NotificationView,
 } from '../src/modules/notifications/index.js';
-import { createLiveTestDatabase, liveDatabaseRequested, type LiveDatabase } from './helpers/live-database.js';
+import { createLiveTestDatabase, createTestPool, liveDatabaseRequested, type LiveDatabase } from './helpers/live-database.js';
 import type { Principal } from '../src/modules/auth/index.js';
 
 const SKIP = !liveDatabaseRequested();
@@ -143,7 +143,7 @@ async function preparedLive(
   options: { failFirstEmail?: boolean; poolOptions?: { max?: number } } = {},
 ): Promise<LiveApp> {
   const live = await createLiveTestDatabase();
-  const pool = new pg.Pool({ connectionString: live.dsn, max: 8, ...options.poolOptions });
+  const pool = createTestPool({ connectionString: live.dsn, max: 8, ...options.poolOptions });
   await applyMigrationsPinned(pool, migrations());
   const executor = poolExecutor(pool);
   const auth = createAuthModule({ executor });
