@@ -3199,3 +3199,359 @@ export function buildBillingEconomicsApp(
     billing,
   };
 }
+
+// ---------------------------------------------------------------------------
+// /zeck (WORK-005): the AI execution integration boundary test app
+// ---------------------------------------------------------------------------
+
+import {
+  createZeckModule,
+  ZeckStoreMissingError,
+  ZeckStoreRuleError,
+  computeEventDeliveryHash,
+  computeEventRecordHash,
+  computeIntentContentHash,
+  computeIntentRecordHash,
+  type AttachReferenceInput,
+  type CallbackDisposition,
+  type CallbackRejectionCode,
+  type RecordCallbackEventStoreInput,
+  type RegisterIntentStoreInput,
+  type ZeckCallbackEventRecord,
+  type ZeckGateway,
+  type ZeckIntentRecord,
+  type ZeckModule,
+  type ZeckStore,
+} from '../../src/modules/zeck/index.js';
+
+export interface InMemoryZeckStoreOptions {
+  now?: () => Date;
+  /** Race-injection hooks (public so concurrency tests can swap them). */
+  beforeRegisterIntent?: () => Promise<void>;
+  beforeAttachReference?: () => Promise<void>;
+  beforeRecordEvent?: () => Promise<void>;
+}
+
+type MutableZeckIntent = Mutable<ZeckIntentRecord>;
+type MutableZeckCallbackEvent = Mutable<ZeckCallbackEventRecord>;
+
+/**
+ * Faithful in-memory implementation of the /zeck store port (NOT a
+ * second persistence authority): tenant predicates, one SYNCHRONOUS
+ * critical section per store operation (the exact semantics of the
+ * advisory-locked SQL transactions — the async race hooks inject
+ * interleaving points BEFORE each section), hash verification on reads
+ * (mutable records so tests can tamper deliberately and prove
+ * detection), the keyed/attempt/correlation dedup identities, the
+ * one-reference-per-intent and one-intent-per-execution invariants, the
+ * idempotent event-decision ledger with the intent last-seen cursor
+ * touch in the same critical section, and the same typed rule/missing
+ * errors as the SQL store.
+ */
+export class InMemoryZeckStore implements ZeckStore {
+  readonly intents = new Map<string, MutableZeckIntent>();
+  readonly intentsByKey = new Map<string, string>();
+  readonly intentsByAttempt = new Map<string, string>();
+  readonly intentsByExecutionRef = new Map<string, string>();
+  readonly events = new Map<string, MutableZeckCallbackEvent>();
+  readonly eventsByEventId = new Map<string, string>();
+  readonly reads = { intentById: 0, intentByExecutionRef: 0, intentsList: 0, eventById: 0, eventsList: 0 };
+  /** Race-injection hooks (public so concurrency tests can swap them). */
+  readonly options: InMemoryZeckStoreOptions;
+  private readonly now: () => Date;
+
+  constructor(options: InMemoryZeckStoreOptions = {}) {
+    this.options = options;
+    this.now = options.now ?? (() => new Date());
+  }
+
+  private verifyIntent(intent: MutableZeckIntent): ZeckIntentRecord {
+    if (computeIntentContentHash(intent) !== intent.contentHash) {
+      throw new ZeckStoreRuleError(
+        `execution intent ${intent.id} content no longer matches its recorded content hash`,
+        'intent-record-tampered',
+      );
+    }
+    if (computeIntentRecordHash(intent) !== intent.recordHash) {
+      throw new ZeckStoreRuleError(
+        `execution intent ${intent.id} record no longer matches its recorded integrity hash`,
+        'intent-record-tampered',
+      );
+    }
+    return { ...intent };
+  }
+
+  private verifyEvent(event: MutableZeckCallbackEvent): ZeckCallbackEventRecord {
+    if (computeEventRecordHash(event) !== event.recordHash) {
+      throw new ZeckStoreRuleError(
+        `callback event ${event.id} record no longer matches its recorded integrity hash`,
+        'event-record-tampered',
+      );
+    }
+    return { ...event };
+  }
+
+  async registerIntent(input: RegisterIntentStoreInput): Promise<{ intent: ZeckIntentRecord; converged: boolean }> {
+    await this.options.beforeRegisterIntent?.();
+    // Synchronous critical section (SQL: keyed lookup + advisory-locked
+    // re-check + attempt check + insert).
+    const key = `${input.tenantId}:${input.idempotencyKey}`;
+    const existingId = this.intentsByKey.get(key);
+    const existing = existingId !== undefined ? this.intents.get(existingId) : undefined;
+    if (existing !== undefined) {
+      if (existing.contentHash !== input.contentHash) {
+        throw new ZeckStoreRuleError(
+          `execution-intent idempotency key "${input.idempotencyKey}" was already bound to different content`,
+          'idempotency-input-conflict',
+        );
+      }
+      return { intent: this.verifyIntent(existing), converged: true };
+    }
+    const attemptKey = `${input.tenantId}:${input.workAttemptId}`;
+    const linkedId = this.intentsByAttempt.get(attemptKey);
+    const linked = linkedId !== undefined ? this.intents.get(linkedId) : undefined;
+    if (linked !== undefined) {
+      throw new ZeckStoreRuleError(
+        `work attempt ${input.workAttemptId} already carries an execution intent; a new logical AI request targets a new attempt, and a retry of the same logical intent reuses its idempotency key`,
+        'attempt-already-linked',
+      );
+    }
+    const id = randomUUID();
+    const intent: MutableZeckIntent = {
+      id,
+      tenantId: input.tenantId,
+      serviceWorkId: input.serviceWorkId,
+      workAttemptId: input.workAttemptId,
+      objective: input.objective,
+      inputArtifactRefs: [...input.inputArtifactRefs],
+      businessContext: { ...input.businessContext },
+      requiredCapabilities: [...input.requiredCapabilities],
+      businessConstraints: { ...input.businessConstraints },
+      outputContract: JSON.parse(JSON.stringify(input.outputContract)) as unknown,
+      idempotencyKey: input.idempotencyKey,
+      contentHash: input.contentHash,
+      recordHash: '',
+      createdBy: input.createdBy,
+      zeckExecutionId: null,
+      zeckApplicationRef: null,
+      submittedBy: null,
+      submittedAt: null,
+      lastSeenEventId: null,
+      lastSeenAt: null,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+    intent.recordHash = computeIntentRecordHash(intent);
+    this.intents.set(id, intent);
+    this.intentsByKey.set(key, id);
+    this.intentsByAttempt.set(attemptKey, id);
+    return { intent: this.verifyIntent(intent), converged: false };
+  }
+
+  async findIntent(tenantId: string, intentId: string): Promise<ZeckIntentRecord | null> {
+    this.reads.intentById += 1;
+    const intent = this.intents.get(intentId);
+    if (intent === undefined || intent.tenantId !== tenantId) {
+      return null;
+    }
+    return this.verifyIntent(intent);
+  }
+
+  async findIntentByExecutionRef(tenantId: string, zeckExecutionId: string): Promise<ZeckIntentRecord | null> {
+    this.reads.intentByExecutionRef += 1;
+    const intentId = this.intentsByExecutionRef.get(`${tenantId}:${zeckExecutionId}`);
+    const intent = intentId !== undefined ? this.intents.get(intentId) : undefined;
+    if (intent === undefined) {
+      return null;
+    }
+    return this.verifyIntent(intent);
+  }
+
+  async listIntents(tenantId: string, filter?: { serviceWorkId?: string; workAttemptId?: string }): Promise<ZeckIntentRecord[]> {
+    this.reads.intentsList += 1;
+    return [...this.intents.values()]
+      .filter(
+        (intent) =>
+          intent.tenantId === tenantId &&
+          (filter?.serviceWorkId === undefined || intent.serviceWorkId === filter.serviceWorkId) &&
+          (filter?.workAttemptId === undefined || intent.workAttemptId === filter.workAttemptId),
+      )
+      .sort((a, b) => (a.createdAt.getTime() === b.createdAt.getTime() ? (a.id < b.id ? -1 : 1) : a.createdAt.getTime() - b.createdAt.getTime()))
+      .map((intent) => this.verifyIntent(intent));
+  }
+
+  async attachExecutionReference(input: AttachReferenceInput): Promise<{ intent: ZeckIntentRecord; converged: boolean }> {
+    await this.options.beforeAttachReference?.();
+    // Synchronous critical section (SQL: intent advisory lock + locked
+    // fresh read + owner check + update with recomputed record hash).
+    const intent = this.intents.get(input.intentId);
+    if (intent === undefined || intent.tenantId !== input.tenantId) {
+      throw new ZeckStoreMissingError('intent', input.intentId);
+    }
+    if (intent.zeckExecutionId !== null) {
+      if (intent.zeckExecutionId === input.zeckExecutionId) {
+        return { intent: this.verifyIntent(intent), converged: true };
+      }
+      throw new ZeckStoreRuleError(
+        `conflicting Zeck execution reference "${input.zeckExecutionId}": intent ${input.intentId} already holds execution reference "${intent.zeckExecutionId}"`,
+        'reference-conflict',
+      );
+    }
+    const ownerKey = `${input.tenantId}:${input.zeckExecutionId}`;
+    const ownerId = this.intentsByExecutionRef.get(ownerKey);
+    if (ownerId !== undefined) {
+      throw new ZeckStoreRuleError(
+        `conflicting Zeck execution reference "${input.zeckExecutionId}": execution reference is already correlated to intent ${ownerId}`,
+        'reference-conflict',
+      );
+    }
+    intent.zeckExecutionId = input.zeckExecutionId;
+    intent.zeckApplicationRef = input.applicationRef;
+    intent.submittedBy = input.submittedBy;
+    intent.submittedAt = input.now;
+    intent.updatedAt = input.now;
+    intent.recordHash = computeIntentRecordHash(intent);
+    this.intentsByExecutionRef.set(ownerKey, input.intentId);
+    return { intent: this.verifyIntent(intent), converged: false };
+  }
+
+  async recordCallbackEvent(input: RecordCallbackEventStoreInput): Promise<{ event: ZeckCallbackEventRecord; converged: boolean }> {
+    await this.options.beforeRecordEvent?.();
+    // Synchronous critical section (SQL: event advisory lock + re-read +
+    // disposition decision + insert + intent cursor touch).
+    const eventKey = `${input.tenantId}:${input.eventId}`;
+    const existingId = this.eventsByEventId.get(eventKey);
+    const existing = existingId !== undefined ? this.events.get(existingId) : undefined;
+    if (existing !== undefined) {
+      if (existing.deliveryHash !== input.deliveryHash) {
+        throw new ZeckStoreRuleError(
+          `callback event "${input.eventId}" was already delivered with different content; divergent re-delivery fails closed`,
+          'event-conflict',
+        );
+      }
+      return { event: this.verifyEvent(existing), converged: true };
+    }
+    // Decide the disposition INSIDE the critical section.
+    let rejection: CallbackRejectionCode | null = input.proposedRejection;
+    let intentId: string | null = null;
+    let intentRow: MutableZeckIntent | null = null;
+    if (rejection === null) {
+      if (input.zeckExecutionId === null) {
+        rejection = 'uncorrelated';
+      } else {
+        const intentIdLookup = this.intentsByExecutionRef.get(`${input.tenantId}:${input.zeckExecutionId}`);
+        const lookup = intentIdLookup !== undefined ? this.intents.get(intentIdLookup) : undefined;
+        if (lookup === undefined) {
+          rejection = 'uncorrelated';
+        } else if (
+          (input.correlation?.serviceWorkId !== undefined && input.correlation.serviceWorkId !== lookup.serviceWorkId) ||
+          (input.correlation?.workAttemptId !== undefined && input.correlation.workAttemptId !== lookup.workAttemptId)
+        ) {
+          rejection = 'conflicting_correlation';
+          intentId = lookup.id;
+        } else {
+          intentRow = lookup;
+        }
+      }
+    }
+    const disposition: CallbackDisposition = rejection === null ? 'accepted' : 'rejected';
+    const observed = disposition === 'accepted' ? input.observed : null;
+    const id = randomUUID();
+    const event: MutableZeckCallbackEvent = {
+      id,
+      tenantId: input.tenantId,
+      eventId: input.eventId,
+      eventType: input.eventType,
+      zeckExecutionId: input.zeckExecutionId,
+      intentId: disposition === 'accepted' ? (intentRow?.id ?? null) : intentId,
+      disposition,
+      rejectionCode: rejection,
+      observed: observed === null ? null : JSON.parse(JSON.stringify(observed)),
+      deliveryHash: input.deliveryHash,
+      recordHash: '',
+      receivedBy: input.receivedBy,
+      receivedAt: input.now,
+    };
+    event.recordHash = computeEventRecordHash(event);
+    this.events.set(id, event);
+    this.eventsByEventId.set(eventKey, id);
+    // Accepted events advance the intent's last-seen cursor in the SAME
+    // critical section (one clock read: both rows pin input.now).
+    if (disposition === 'accepted' && intentRow !== null) {
+      intentRow.lastSeenEventId = input.eventId;
+      intentRow.lastSeenAt = input.now;
+      intentRow.updatedAt = input.now;
+      intentRow.recordHash = computeIntentRecordHash(intentRow);
+    }
+    return { event: this.verifyEvent(event), converged: false };
+  }
+
+  async findCallbackEvent(tenantId: string, eventId: string): Promise<ZeckCallbackEventRecord | null> {
+    this.reads.eventById += 1;
+    const eventIdLookup = this.eventsByEventId.get(`${tenantId}:${eventId}`);
+    const event = eventIdLookup !== undefined ? this.events.get(eventIdLookup) : undefined;
+    if (event === undefined) {
+      return null;
+    }
+    return this.verifyEvent(event);
+  }
+
+  async listCallbackEvents(
+    tenantId: string,
+    filter?: { intentId?: string; disposition?: CallbackDisposition },
+  ): Promise<ZeckCallbackEventRecord[]> {
+    this.reads.eventsList += 1;
+    return [...this.events.values()]
+      .filter(
+        (event) =>
+          event.tenantId === tenantId &&
+          (filter?.intentId === undefined || event.intentId === filter.intentId) &&
+          (filter?.disposition === undefined || event.disposition === filter.disposition),
+      )
+      .sort((a, b) => (a.receivedAt.getTime() === b.receivedAt.getTime() ? (a.id < b.id ? -1 : 1) : a.receivedAt.getTime() - b.receivedAt.getTime()))
+      .map((event) => this.verifyEvent(event));
+  }
+}
+
+export interface ZeckBoundaryApp {
+  readonly authStore: InMemoryAuthStore;
+  readonly orgStore: InMemoryOrganizationsStore;
+  readonly workStore: InMemoryWorkStore;
+  readonly zeckStore: InMemoryZeckStore;
+  readonly auth: AuthModule;
+  readonly organizations: OrganizationsModule;
+  readonly work: WorkModule;
+  readonly zeck: ZeckModule;
+}
+
+export function buildZeckBoundaryApp(
+  options: {
+    now?: () => Date;
+    workStoreOptions?: InMemoryWorkStoreOptions;
+    zeckStoreOptions?: InMemoryZeckStoreOptions;
+    gateway?: ZeckGateway;
+  } = {},
+): ZeckBoundaryApp {
+  const now = options.now ?? (() => new Date());
+  const identity = buildIdentityApp({ now });
+  const workStore = new InMemoryWorkStore({ now, ...options.workStoreOptions });
+  const work = createWorkModule({ store: workStore, tenancy: identity.organizations, now });
+  const zeckStore = new InMemoryZeckStore({ now, ...options.zeckStoreOptions });
+  const zeck = createZeckModule({
+    store: zeckStore,
+    tenancy: identity.organizations,
+    work,
+    ...(options.gateway !== undefined ? { gateway: options.gateway } : {}),
+    now,
+  });
+  return {
+    authStore: identity.authStore,
+    orgStore: identity.orgStore,
+    workStore,
+    zeckStore,
+    auth: identity.auth,
+    organizations: identity.organizations,
+    work,
+    zeck,
+  };
+}

@@ -124,7 +124,11 @@ export const VERTICALS_ALLOWED_IMPORTS: readonly string[] = ['auth', 'organizati
 export const SERVICES_ALLOWED_IMPORTS: readonly string[] = ['auth', 'organizations', 'verticals', 'workflow'];
 
 /** Modules allowed to import /verticals (frontier-relative). */
-export const VERTICALS_IMPORTERS: readonly string[] = ['services'];
+// WORK-005 extends the frontier: /zeck consumes the frozen
+// capability-requirement declaration contract through /verticals'
+// public interface (the AI Execution Intent's requiredCapabilities are
+// validated by the SAME authority — never re-implemented).
+export const VERTICALS_IMPORTERS: readonly string[] = ['services', 'zeck'];
 
 /** Modules allowed to import /services (frontier-relative). */
 export const SERVICES_IMPORTERS: readonly string[] = ['billing'];

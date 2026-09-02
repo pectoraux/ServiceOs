@@ -53,6 +53,21 @@ kebab-or-underscore name), applied in ascending order.
   is the closed authority domain `ai_authority`, there is no
   provider/model/token column anywhere, and the AI usage/cost authority
   stays external).
+  WORK-005 ships `0008_zeck_integration_boundary.sql` (the AI execution
+  integration boundary's REFERENCE-SHAPED durable surface:
+  `zeck_execution_intents` — the business-side linkage with the keyed
+  logical identity, the ONE-intent-per-work-attempt correlation identity,
+  the ONE-intent-per-foreign-execution partial unique index and the
+  reference/submission pairing CHECK; and `zeck_callback_events` — the
+  immutable translated delivery ledger with ONE row per (tenant, event
+  identity) and the exact disposition/rejection pairing CHECK. There is
+  NO execution status/state/lifecycle column and NO credential column
+  anywhere: the authoritative AI execution record stays in Zeck
+  (architecture-lock #19; both prohibitions are machine-checked by
+  `checkZeckBoundaries`). Work/attempt identities are validated through
+  /work's public read at the module layer — the /billing precedent for
+  cross-module identity references — so there are no cross-module
+  foreign keys).
   Later Work Orders own their own durable tables per the frozen
   architecture's authority boundaries.
 - Migration files create tables only under module-owned prefixes

@@ -21,6 +21,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { checkWorkBoundaries, extractCreatedTables } from '../src/platform/governance/work-boundary-checks.js';
+import { checkZeckBoundaries } from '../src/platform/governance/zeck-boundary-checks.js';
 import { makeTempTree, moduleFile } from './helpers/tree.js';
 
 const REAL_SRC_ROOT = resolve(process.cwd(), 'src');
@@ -60,6 +61,19 @@ function runCheck(files: Record<string, string>): { code: string; detail: string
   const { root, cleanup } = makeTempTree(files);
   try {
     return checkWorkBoundaries({
+      srcRoot: resolve(root, 'src'),
+      migrationsDir: resolve(root, 'db/migrations'),
+    });
+  } finally {
+    cleanup();
+  }
+}
+
+/** The WORK-005 Zeck boundary checks over the same synthetic trees. */
+function runZeckCheck(files: Record<string, string>): { code: string; detail: string; file?: string }[] {
+  const { root, cleanup } = makeTempTree(files);
+  try {
+    return checkZeckBoundaries({
       srcRoot: resolve(root, 'src'),
       migrationsDir: resolve(root, 'db/migrations'),
     });
@@ -173,18 +187,42 @@ test('a Zeck-named export in /work is rejected (AC-2 separation)', () => {
   assert.equal(violations[0]?.code, 'zeck-state-in-work');
 });
 
-test('a zeck table in a migration is rejected (discrimination)', () => {
+test('a zeck lifecycle table in a migration is rejected (discrimination, refined by WORK-005)', () => {
+  // WORK-005 owns the `zeck_` table prefix (the reference/observation
+  // surface of migration 0008), so the OLD off-prefix tripwire no longer
+  // fires for `zeck_`-prefixed tables. The shadow-lifecycle prohibition
+  // is now enforced PRECISELY: a `zeck_`-prefixed table declaring an
+  // execution-lifecycle column is rejected by checkZeckBoundaries
+  // (zeck-lifecycle-schema-in-serviceos) — a stronger discrimination
+  // than the old blanket zeck-string rule, which would have rejected
+  // the legitimate reference surface too.
   const files = conformingTree();
-  files['db/migrations/0003_zeck_executions.sql'] = 'CREATE TABLE zeck_executions (id UUID, status TEXT);\n';
+  files['db/migrations/0003_zeck_executions.sql'] =
+    'CREATE TABLE zeck_executions (\n  id UUID,\n  status TEXT\n);\n';
+  const violations = runZeckCheck(files);
+  assert.deepEqual(
+    violations.map((violation) => violation.code).sort(),
+    ['zeck-lifecycle-schema-in-serviceos'],
+  );
+  const zeckViolation = violations.find((violation) => violation.code === 'zeck-lifecycle-schema-in-serviceos');
+  assert.ok(zeckViolation?.file?.includes('0003_zeck_executions.sql'));
+  // The prefix discipline still accepts `zeck_` (owned by WORK-005) and
+  // the blanket rule accepts the /zeck-owned migration shape: the same
+  // plant must NOT trip the work-boundary migration tripwires anymore.
+  assert.deepEqual(runCheck(files), []);
+});
+
+test('zeck references outside the /zeck-owned migration are rejected (discrimination, WORK-005)', () => {
+  // A zeck reference in a migration that is NOT the `zeck`-named,
+  // all-`zeck_`-tables reference migration is a boundary leak and fails
+  // closed exactly as before (architecture-lock #19).
+  const files = conformingTree();
+  files['db/migrations/0009_side_channel.sql'] = 'CREATE TABLE side_channel_events (id UUID, zeck_execution_id TEXT);\n';
   const violations = runCheck(files);
-  // Both tripwires fire: the zeck shadow-state schema AND the off-prefix
-  // table (zeck_ is not a module-owned prefix).
   assert.deepEqual(
     violations.map((violation) => violation.code).sort(),
     ['unknown-migration-table-prefix', 'zeck-schema-in-serviceos'],
   );
-  const zeckViolation = violations.find((violation) => violation.code === 'zeck-schema-in-serviceos');
-  assert.ok(zeckViolation?.file?.includes('0003_zeck_executions.sql'));
 });
 
 test('an off-prefix migration table is rejected (discrimination)', () => {

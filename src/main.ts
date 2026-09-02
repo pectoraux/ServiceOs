@@ -32,6 +32,7 @@ import { createAdapterRegistry, createEffectSink } from './modules/integrations/
 import { createInteractionsModule } from './modules/interactions/index.js';
 import { createNotificationsModule } from './modules/notifications/index.js';
 import { createVerticalsModule } from './modules/verticals/index.js';
+import { createZeckModule } from './modules/zeck/index.js';
 import { createServicesModule } from './modules/services/index.js';
 import { createBillingModule } from './modules/billing/index.js';
 
@@ -160,6 +161,25 @@ export async function main(): Promise<void> {
   // No HTTP surface (WORK-012 owns the control-plane API).
   const verticalsModule = createVerticalsModule({ executor, tenancy: organizationsModule });
 
+  // Zeck integration boundary (/zeck, WORK-005): the thin AI execution
+  // boundary — ONE provider-neutral port, durable intent/reference
+  // linkage, translated callback observations. It consumes the single
+  // authorization chain, /work's public read (correlation validation,
+  // read-only) and /verticals' frozen capability-requirement contract
+  // (never re-implemented). NO gateway is composed in this Work Order:
+  // the boundary stays CLOSED and submissions fail closed
+  // ZECK_GATEWAY_UNAVAILABLE (truthful unavailability — no fabricated
+  // success, no credentials in ServiceOS, no premature external AI
+  // requests until the Work Order owning Zeck connection configuration
+  // registers a real gateway). A Zeck acceptance or a translated result
+  // NEVER completes Service Work (the business authorities decide
+  // through their own surfaces). No HTTP surface (WORK-012).
+  const zeckModule = createZeckModule({
+    executor,
+    tenancy: organizationsModule,
+    work: workModule,
+  });
+
   // Service-definition authority (/services, WORK-009): the binding layer.
   // It consumes the single authorization chain, /verticals' public package
   // registry (registration pinning + declaration cross-validation, never a
@@ -235,6 +255,7 @@ export async function main(): Promise<void> {
     verticalsAuthority: verticalsModule !== null ? 'composed' : 'missing',
     servicesAuthority: servicesModule !== null ? 'composed' : 'missing',
     billingAuthority: billingModule !== null ? 'composed' : 'missing',
+    zeckBoundary: zeckModule !== null ? 'composed (closed: no gateway)' : 'missing',
     registeredAdapterCapabilities: adapterRegistry.describe().length,
   });
 }

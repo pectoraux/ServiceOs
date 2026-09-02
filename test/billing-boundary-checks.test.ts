@@ -221,12 +221,25 @@ test('the cost-reference table growing provider/model columns is rejected', () =
 });
 
 test('the check CLI runs the billing boundary checks end-to-end', () => {
-  // The real repository passes the full CLI check (incl. the billing
-  // checks and the governance state) on this branch.
+  // Era-independent: derive the expected in-flight branch from the
+  // repository's own governance state (the pinned branch moves with each
+  // activation frontier; a hard-coded past frontier would fail after the
+  // next activation).
+  const state = JSON.parse(readFileSync(resolve(process.cwd(), 'spec/development-state/checkpoint-state.json'), 'utf8'));
+  const active = state.active as { branch: string }[];
+  assert.ok(active.length <= 1, 'at most one Work Order is active');
+  let expectBranch: string | undefined;
+  if (active.length === 1) {
+    expectBranch = active[0]?.branch;
+  }
   const result = spawnSync(process.execPath, ['dist/src/cli/check.js'], {
     cwd: process.cwd(),
     encoding: 'utf8',
-    env: { ...process.env, SERVICEOS_DATABASE_URL: 'postgres://placeholder', EXPECT_BRANCH: 'feat/WORK-011-billing-economics' },
+    env: {
+      ...process.env,
+      SERVICEOS_DATABASE_URL: 'postgres://placeholder',
+      ...(expectBranch !== undefined ? { EXPECT_BRANCH: expectBranch } : {}),
+    },
   });
   assert.equal(result.status, 0, `check CLI failed:\n${result.stdout}\n${result.stderr}`);
   assert.ok(result.stdout.includes('billing: single customer-economics authority'));

@@ -34,6 +34,7 @@ export {
 export {
   checkWorkBoundaries,
   extractCreatedTables,
+  extractCreatedColumns,
   extractRelativeModuleImports,
   stripSqlComments,
   RESERVED_TRANSITION_EXPORTS,
@@ -41,6 +42,15 @@ export {
   ALLOWED_MIGRATION_TABLE_PREFIXES,
   type WorkBoundaryCheckOptions,
 } from './work-boundary-checks.js';
+export {
+  checkZeckBoundaries,
+  RESERVED_ZECK_AUTHORITY_EXPORTS,
+  ZECK_ALLOWED_IMPORTS,
+  ZECK_IMPORTERS,
+  ZECK_LIFECYCLE_COLUMN_DENYLIST,
+  ZECK_CREDENTIAL_TOKENS,
+  type ZeckBoundaryCheckOptions,
+} from './zeck-boundary-checks.js';
 export {
   checkPoliciesBoundaries,
   RESERVED_POLICY_AUTHORITY_EXPORTS,
