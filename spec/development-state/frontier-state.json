@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "currentMain": "82caf3714ed4c52052959e7a384487a844eeca76",
-  "currentLiveImplementation": null,
-  "plannedNext": ["WORK-007"],
-  "plannedFuture": ["WORK-007","WORK-008","WORK-006","WORK-010","WORK-012","WORK-013"],
-  "inFlight": [],
+  "currentMain": "c348c78f51c6e2bc139d172a849e1ba651aff134",
+  "currentLiveImplementation": "WORK-007",
+  "plannedNext": [],
+  "plannedFuture": ["WORK-008","WORK-006","WORK-010","WORK-012","WORK-013"],
+  "inFlight": ["WORK-007"],
   "knownConflicts": [],
   "rule": "Architect activation is required before a planned Work Order becomes in-flight. While a Work Order is in-flight, plannedNext is empty and the Architect must inspect that Work Order before authorizing another."
 }
