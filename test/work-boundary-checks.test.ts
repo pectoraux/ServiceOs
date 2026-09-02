@@ -188,14 +188,6 @@ test('a Zeck-named export in /work is rejected (AC-2 separation)', () => {
 });
 
 test('a zeck lifecycle table in a migration is rejected (discrimination, refined by WORK-005)', () => {
-  // WORK-005 owns the `zeck_` table prefix (the reference/observation
-  // surface of migration 0008), so the OLD off-prefix tripwire no longer
-  // fires for `zeck_`-prefixed tables. The shadow-lifecycle prohibition
-  // is now enforced PRECISELY: a `zeck_`-prefixed table declaring an
-  // execution-lifecycle column is rejected by checkZeckBoundaries
-  // (zeck-lifecycle-schema-in-serviceos) — a stronger discrimination
-  // than the old blanket zeck-string rule, which would have rejected
-  // the legitimate reference surface too.
   const files = conformingTree();
   files['db/migrations/0003_zeck_executions.sql'] =
     'CREATE TABLE zeck_executions (\n  id UUID,\n  status TEXT\n);\n';
@@ -206,16 +198,10 @@ test('a zeck lifecycle table in a migration is rejected (discrimination, refined
   );
   const zeckViolation = violations.find((violation) => violation.code === 'zeck-lifecycle-schema-in-serviceos');
   assert.ok(zeckViolation?.file?.includes('0003_zeck_executions.sql'));
-  // The prefix discipline still accepts `zeck_` (owned by WORK-005) and
-  // the blanket rule accepts the /zeck-owned migration shape: the same
-  // plant must NOT trip the work-boundary migration tripwires anymore.
   assert.deepEqual(runCheck(files), []);
 });
 
 test('zeck references outside the /zeck-owned migration are rejected (discrimination, WORK-005)', () => {
-  // A zeck reference in a migration that is NOT the `zeck`-named,
-  // all-`zeck_`-tables reference migration is a boundary leak and fails
-  // closed exactly as before (architecture-lock #19).
   const files = conformingTree();
   files['db/migrations/0009_side_channel.sql'] = 'CREATE TABLE side_channel_events (id UUID, zeck_execution_id TEXT);\n';
   const violations = runCheck(files);
@@ -258,20 +244,20 @@ test('a missing module tree fails closed instead of passing vacuously', () => {
 test('check CLI wiring: the real repository passes end-to-end (static)', () => {
   // The check CLI (npm run check) composes checkWorkBoundaries with the
   // architecture and identity checks; running it here proves the wiring
-  // end-to-end. It exits non-zero on any violation. (Minimal env, mirroring
-  // the WORK-001 check-CLI proof; era-relative branch from program state.)
+  // end-to-end. It exits non-zero on any violation. EXPECT_BRANCH is only
+  // supplied during implementation era; finalized canonical state has no
+  // in-flight Work Order and is valid without a branch expectation.
   const program = JSON.parse(
     readFileSync(join(process.cwd(), 'spec/development-state/program-state.json'), 'utf8'),
   ) as { workOrders: { id: string; status: string; branch: string }[] };
   const live = program.workOrders.find((entry) => entry.status === 'in_flight');
-  assert.ok(live, 'expected an in-flight Work Order in canonical state');
   const result = spawnSync(process.execPath, [resolve(process.cwd(), 'dist/src/cli/check.js')], {
     cwd: process.cwd(),
     encoding: 'utf8',
     env: {
       PATH: process.env.PATH ?? '',
       HOME: process.env.HOME ?? '',
-      EXPECT_BRANCH: live.branch,
+      ...(live ? { EXPECT_BRANCH: live.branch } : {}),
     },
   });
   assert.equal(result.status, 0, `stdout:\n${result.stdout ?? ''}\nstderr:\n${result.stderr ?? ''}`);
