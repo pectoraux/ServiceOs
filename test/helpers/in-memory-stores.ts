@@ -3555,3 +3555,325 @@ export function buildZeckBoundaryApp(
     zeck,
   };
 }
+
+// ---------------------------------------------------------------------------
+// In-memory /evidence store (WORK-007)
+// ---------------------------------------------------------------------------
+
+import {
+  EvidenceStoreMissingError,
+  EvidenceStoreRuleError,
+  computeEvidenceContentHash,
+  computeEvidenceRecordHash,
+  computeVerificationContentHash,
+  computeVerificationRecordHash,
+  createEvidenceModule,
+  type AttachEvidenceStoreInput,
+  type EvidenceRecord,
+  type EvidenceStore,
+  type EvidenceStoreRule,
+  type OutcomeVerificationRecord,
+  type RecordVerificationStoreInput,
+  type EvidenceModule,
+} from '../../src/modules/evidence/index.js';
+
+export interface InMemoryEvidenceStoreOptions {
+  now?: () => Date;
+  /** Race-injection hooks (public so concurrency tests can swap them). */
+  beforeAttachEvidence?: () => Promise<void>;
+  beforeRecordVerification?: () => Promise<void>;
+}
+
+type MutableEvidence = Mutable<EvidenceRecord>;
+type MutableVerification = Mutable<OutcomeVerificationRecord>;
+
+/**
+ * Faithful in-memory implementation of the /evidence store port (NOT a
+ * second persistence authority): tenant predicates, one SYNCHRONOUS
+ * critical section per store operation (the exact semantics of the
+ * advisory-locked SQL transactions — the async race hooks inject
+ * interleaving points BEFORE each section), hash verification on reads
+ * (mutable records so tests can tamper deliberately and prove
+ * detection), the keyed logical identity, the content identity (ONE
+ * durable row per evidence fact per work item), the immutable decision
+ * ledger with the injected PURE evaluator running INSIDE the critical
+ * section over the committed evidence state, and the same typed
+ * rule/missing errors as the SQL store.
+ */
+export class InMemoryEvidenceStore implements EvidenceStore {
+  readonly evidence = new Map<string, MutableEvidence>();
+  readonly evidenceByKey = new Map<string, string>();
+  readonly evidenceByContent = new Map<string, string>();
+  readonly verifications = new Map<string, MutableVerification>();
+  readonly verificationsByKey = new Map<string, string>();
+  readonly reads = { evidenceById: 0, evidenceByKey: 0, evidenceByContent: 0, evidenceList: 0, verificationById: 0, verificationByKey: 0, verificationsList: 0 };
+  /** Race-injection hooks (public so concurrency tests can swap them). */
+  readonly options: InMemoryEvidenceStoreOptions;
+  private readonly now: () => Date;
+
+  constructor(options: InMemoryEvidenceStoreOptions = {}) {
+    this.options = options;
+    this.now = options.now ?? (() => new Date());
+  }
+
+  private verifyEvidence(record: MutableEvidence): EvidenceRecord {
+    if (
+      computeEvidenceContentHash({
+        tenantId: record.tenantId,
+        serviceWorkId: record.serviceWorkId,
+        workAttemptId: record.workAttemptId,
+        requirement: record.requirement,
+        provenance: record.provenance,
+        payload: record.payload,
+        observedAt: record.observedAt,
+      }) !== record.contentHash
+    ) {
+      throw new EvidenceStoreRuleError(
+        `evidence record ${record.id} content no longer matches its recorded content hash`,
+        'evidence-record-tampered',
+      );
+    }
+    if (computeEvidenceRecordHash(record) !== record.recordHash) {
+      throw new EvidenceStoreRuleError(
+        `evidence record ${record.id} record no longer matches its recorded integrity hash`,
+        'evidence-record-tampered',
+      );
+    }
+    return { ...record, provenance: { ...record.provenance, refs: [...record.provenance.refs] } };
+  }
+
+  private verifyVerification(record: MutableVerification): OutcomeVerificationRecord {
+    if (computeVerificationRecordHash(record) !== record.recordHash) {
+      throw new EvidenceStoreRuleError(
+        `outcome verification ${record.id} record no longer matches its recorded integrity hash`,
+        'verification-record-tampered',
+      );
+    }
+    return {
+      ...record,
+      requirements: [...record.requirements],
+      requirementResults: record.requirementResults.map((result) => ({ ...result, evidenceIds: [...result.evidenceIds] })),
+    };
+  }
+
+  async attachEvidence(input: AttachEvidenceStoreInput): Promise<{ evidence: EvidenceRecord; converged: boolean }> {
+    await this.options.beforeAttachEvidence?.();
+    // Synchronous critical section (SQL: keyed lookup + content lookup
+    // + advisory locks + post-lock re-checks + insert).
+    const key = `${input.tenantId}:${input.idempotencyKey}`;
+    const existingId = this.evidenceByKey.get(key);
+    const existing = existingId !== undefined ? this.evidence.get(existingId) : undefined;
+    if (existing !== undefined) {
+      if (existing.contentHash !== input.contentHash) {
+        throw new EvidenceStoreRuleError(
+          `evidence idempotency key "${input.idempotencyKey}" was already bound to different content`,
+          'evidence-input-conflict',
+        );
+      }
+      return { evidence: this.verifyEvidence(existing), converged: true };
+    }
+    const contentKey = `${input.tenantId}:${input.serviceWorkId}:${input.contentHash}`;
+    const contentId = this.evidenceByContent.get(contentKey);
+    const content = contentId !== undefined ? this.evidence.get(contentId) : undefined;
+    if (content !== undefined) {
+      return { evidence: this.verifyEvidence(content), converged: true };
+    }
+    const id = randomUUID();
+    const record: MutableEvidence = {
+      id,
+      tenantId: input.tenantId,
+      serviceWorkId: input.serviceWorkId,
+      workAttemptId: input.workAttemptId,
+      requirement: input.requirement,
+      provenance: { ...input.provenance, refs: [...input.provenance.refs] },
+      payload: JSON.parse(JSON.stringify(input.payload)) as unknown,
+      observedAt: input.observedAt,
+      idempotencyKey: input.idempotencyKey,
+      contentHash: input.contentHash,
+      recordHash: '',
+      attachedBy: input.attachedBy,
+      attachedAt: input.now,
+    };
+    record.recordHash = computeEvidenceRecordHash(record);
+    this.evidence.set(id, record);
+    this.evidenceByKey.set(key, id);
+    this.evidenceByContent.set(contentKey, id);
+    return { evidence: this.verifyEvidence(record), converged: false };
+  }
+
+  async findEvidence(tenantId: string, evidenceId: string): Promise<EvidenceRecord | null> {
+    this.reads.evidenceById += 1;
+    const record = this.evidence.get(evidenceId);
+    if (record === undefined || record.tenantId !== tenantId) {
+      return null;
+    }
+    return this.verifyEvidence(record);
+  }
+
+  async findEvidenceByKey(tenantId: string, idempotencyKey: string): Promise<EvidenceRecord | null> {
+    this.reads.evidenceByKey += 1;
+    const id = this.evidenceByKey.get(`${tenantId}:${idempotencyKey}`);
+    const record = id !== undefined ? this.evidence.get(id) : undefined;
+    if (record === undefined) {
+      return null;
+    }
+    return this.verifyEvidence(record);
+  }
+
+  async findEvidenceByContent(tenantId: string, serviceWorkId: string, contentHash: string): Promise<EvidenceRecord | null> {
+    this.reads.evidenceByContent += 1;
+    const id = this.evidenceByContent.get(`${tenantId}:${serviceWorkId}:${contentHash}`);
+    const record = id !== undefined ? this.evidence.get(id) : undefined;
+    if (record === undefined) {
+      return null;
+    }
+    return this.verifyEvidence(record);
+  }
+
+  async listEvidence(
+    tenantId: string,
+    filter?: { serviceWorkId?: string; workAttemptId?: string; requirement?: string },
+  ): Promise<EvidenceRecord[]> {
+    this.reads.evidenceList += 1;
+    return [...this.evidence.values()]
+      .filter(
+        (record) =>
+          record.tenantId === tenantId &&
+          (filter?.serviceWorkId === undefined || record.serviceWorkId === filter.serviceWorkId) &&
+          (filter?.workAttemptId === undefined || record.workAttemptId === filter.workAttemptId) &&
+          (filter?.requirement === undefined || record.requirement === filter.requirement),
+      )
+      .sort((a, b) =>
+        a.attachedAt.getTime() === b.attachedAt.getTime() ? (a.id < b.id ? -1 : 1) : a.attachedAt.getTime() - b.attachedAt.getTime(),
+      )
+      .map((record) => this.verifyEvidence(record));
+  }
+
+  async recordVerification(input: RecordVerificationStoreInput): Promise<{ verification: OutcomeVerificationRecord; converged: boolean }> {
+    await this.options.beforeRecordVerification?.();
+    // Synchronous critical section (SQL: keyed lock + work-state lock +
+    // committed evidence read + injected pure evaluation + keyed
+    // re-check + insert).
+    const evidence = await this.listEvidence(input.tenantId, { serviceWorkId: input.serviceWorkId });
+    const evaluation = input.evaluate(evidence);
+    const contentHash = computeVerificationContentHash({
+      tenantId: input.tenantId,
+      serviceWorkId: input.serviceWorkId,
+      outcomeId: input.outcomeId,
+      verificationMode: input.verificationMode,
+      requirements: input.requirements,
+      evidenceSnapshot: evaluation.evidenceSnapshot,
+    });
+    const key = `${input.tenantId}:${input.idempotencyKey}`;
+    const existingId = this.verificationsByKey.get(key);
+    const existing = existingId !== undefined ? this.verifications.get(existingId) : undefined;
+    if (existing !== undefined) {
+      if (existing.contentHash !== contentHash) {
+        throw new EvidenceStoreRuleError(
+          `verification idempotency key "${input.idempotencyKey}" already holds a decision over a different input; the evidence state or contract changed since that decision and a re-verification is a new logical decision (use a new idempotency key)`,
+          'verification-input-conflict',
+        );
+      }
+      return { verification: this.verifyVerification(existing), converged: true };
+    }
+    const id = randomUUID();
+    const record: MutableVerification = {
+      id,
+      tenantId: input.tenantId,
+      serviceWorkId: input.serviceWorkId,
+      outcomeId: input.outcomeId,
+      verificationMode: input.verificationMode,
+      requirements: [...input.requirements],
+      verdict: evaluation.verdict,
+      requirementResults: evaluation.requirementResults.map((result) => ({ ...result, evidenceIds: [...result.evidenceIds] })),
+      idempotencyKey: input.idempotencyKey,
+      contentHash,
+      recordHash: '',
+      decidedBy: input.decidedBy,
+      decidedAt: input.now,
+    };
+    record.recordHash = computeVerificationRecordHash(record);
+    this.verifications.set(id, record);
+    this.verificationsByKey.set(key, id);
+    return { verification: this.verifyVerification(record), converged: false };
+  }
+
+  async findVerification(tenantId: string, verificationId: string): Promise<OutcomeVerificationRecord | null> {
+    this.reads.verificationById += 1;
+    const record = this.verifications.get(verificationId);
+    if (record === undefined || record.tenantId !== tenantId) {
+      return null;
+    }
+    return this.verifyVerification(record);
+  }
+
+  async findVerificationByKey(tenantId: string, idempotencyKey: string): Promise<OutcomeVerificationRecord | null> {
+    this.reads.verificationByKey += 1;
+    const id = this.verificationsByKey.get(`${tenantId}:${idempotencyKey}`);
+    const record = id !== undefined ? this.verifications.get(id) : undefined;
+    if (record === undefined) {
+      return null;
+    }
+    return this.verifyVerification(record);
+  }
+
+  async listVerifications(
+    tenantId: string,
+    filter?: { serviceWorkId?: string; outcomeId?: string; verdict?: 'satisfied' | 'not_satisfied' },
+  ): Promise<OutcomeVerificationRecord[]> {
+    this.reads.verificationsList += 1;
+    return [...this.verifications.values()]
+      .filter(
+        (record) =>
+          record.tenantId === tenantId &&
+          (filter?.serviceWorkId === undefined || record.serviceWorkId === filter.serviceWorkId) &&
+          (filter?.outcomeId === undefined || record.outcomeId === filter.outcomeId) &&
+          (filter?.verdict === undefined || record.verdict === filter.verdict),
+      )
+      .sort((a, b) =>
+        a.decidedAt.getTime() === b.decidedAt.getTime() ? (a.id < b.id ? -1 : 1) : a.decidedAt.getTime() - b.decidedAt.getTime(),
+      )
+      .map((record) => this.verifyVerification(record));
+  }
+}
+
+export interface EvidenceAuthorityApp {
+  readonly authStore: InMemoryAuthStore;
+  readonly orgStore: InMemoryOrganizationsStore;
+  readonly workStore: InMemoryWorkStore;
+  readonly evidenceStore: InMemoryEvidenceStore;
+  readonly auth: AuthModule;
+  readonly organizations: OrganizationsModule;
+  readonly work: WorkModule;
+  readonly evidence: EvidenceModule;
+}
+
+export function buildEvidenceApp(
+  options: {
+    now?: () => Date;
+    workStoreOptions?: InMemoryWorkStoreOptions;
+    evidenceStoreOptions?: InMemoryEvidenceStoreOptions;
+  } = {},
+): EvidenceAuthorityApp {
+  const now = options.now ?? (() => new Date());
+  const identity = buildIdentityApp({ now });
+  const workStore = new InMemoryWorkStore({ now, ...options.workStoreOptions });
+  const work = createWorkModule({ store: workStore, tenancy: identity.organizations, now });
+  const evidenceStore = new InMemoryEvidenceStore({ now, ...options.evidenceStoreOptions });
+  const evidence = createEvidenceModule({
+    store: evidenceStore,
+    tenancy: identity.organizations,
+    work,
+    now,
+  });
+  return {
+    authStore: identity.authStore,
+    orgStore: identity.orgStore,
+    workStore,
+    evidenceStore,
+    auth: identity.auth,
+    organizations: identity.organizations,
+    work,
+    evidence,
+  };
+}

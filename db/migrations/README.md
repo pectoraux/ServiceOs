@@ -68,6 +68,22 @@ kebab-or-underscore name), applied in ascending order.
   /work's public read at the module layer — the /billing precedent for
   cross-module identity references — so there are no cross-module
   foreign keys).
+  WORK-007 ships `0009_business_evidence.sql` (the business-evidence
+  authority's IMMUTABLE ledgers: `evidence_records` — the attributable
+  business-evidence fact rows with the keyed logical identity, the
+  ONE-row-per-evidence-fact content identity (tenant, work, content
+  hash — duplicate attachment converges under ANY key) and the exact
+  provenance-shape CHECK; and `evidence_outcome_verifications` — the
+  immutable outcome-verification decision ledger with the closed
+  business-verification-mode and verdict enumerations and the keyed
+  decision identity. There is NO lifecycle/status column and NO typed
+  foreign-AI-execution/model column anywhere: the ledgers are
+  append-only attributable business records, never a parallel AI
+  execution evidence store and never a Service Work state machine
+  (architecture-lock #4; machine-checked by `checkEvidenceBoundaries`).
+  Work/attempt identities are validated through /work's public read at
+  the module layer — the /billing and /zeck precedent for cross-module
+  identity references — so there are no cross-module foreign keys).
   Later Work Orders own their own durable tables per the frozen
   architecture's authority boundaries.
 - Migration files create tables only under module-owned prefixes

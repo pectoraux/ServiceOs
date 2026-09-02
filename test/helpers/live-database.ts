@@ -25,6 +25,26 @@ export function liveDatabaseRequested(): boolean {
   return process.env.SERVICEOS_TEST_DATABASE_URL !== undefined;
 }
 
+/**
+ * A test pg pool with idle-client-error tolerance. `DROP DATABASE ...
+ * WITH (FORCE)` (this helper's `drop()`, or any sibling test's teardown
+ * under CI's concurrent test files) terminates idle pooled clients;
+ * pg then emits a pool-level `'error'` event which — with no listener —
+ * surfaces as an UNCAUGHT EXCEPTION attributed to whatever test happens
+ * to be running (the documented CI flake class; see the drain comment in
+ * test/service-work.integration.test.ts). A no-op listener keeps such
+ * teardown noise non-fatal: real query failures still reject their query
+ * promises and are asserted by the tests.
+ */
+/** The pool configuration every test pool passes (pg's own constructor input). */
+export type TestPoolConfig = NonNullable<ConstructorParameters<typeof pg.Pool>[0]>;
+
+export function createTestPool(config: TestPoolConfig): pg.Pool {
+  const pool = new pg.Pool(config);
+  pool.on('error', () => undefined);
+  return pool;
+}
+
 /** Create a uniquely-named disposable database for one integration test. */
 export async function createLiveTestDatabase(): Promise<LiveDatabase> {
   const baseUrl = process.env.SERVICEOS_TEST_DATABASE_URL;

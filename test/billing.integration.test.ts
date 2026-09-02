@@ -49,7 +49,7 @@ import { createVerticalsModule, VerticalsError } from '../src/modules/verticals/
 import { createServicesModule, ServicesError } from '../src/modules/services/index.js';
 import { createWorkModule } from '../src/modules/work/index.js';
 import { createBillingModule, BillingError } from '../src/modules/billing/index.js';
-import { createLiveTestDatabase, liveDatabaseRequested, type LiveDatabase } from './helpers/live-database.js';
+import { createLiveTestDatabase, createTestPool, liveDatabaseRequested, type LiveDatabase } from './helpers/live-database.js';
 import type { Principal } from '../src/modules/auth/index.js';
 
 const SKIP = !liveDatabaseRequested();
@@ -114,7 +114,7 @@ interface LiveApp {
 
 async function liveApp(): Promise<LiveApp> {
   const live = await createLiveTestDatabase();
-  const pool = new pg.Pool({ connectionString: live.dsn, max: 4 });
+  const pool = createTestPool({ connectionString: live.dsn, max: 4 });
   await applyMigrationsPinned(pool, migrations());
   const executor = poolExecutor(pool);
   const auth = createAuthModule({ executor });
@@ -230,7 +230,7 @@ async function expectCode(error: unknown, code: string): Promise<void> {
 
 test('migrations apply in order and are idempotent (live schema)', { skip: SKIP }, async () => {
   const live = await createLiveTestDatabase();
-  const pool = new pg.Pool({ connectionString: live.dsn, max: 2 });
+  const pool = createTestPool({ connectionString: live.dsn, max: 2 });
   try {
     const first = await applyMigrationsPinned(pool, migrations());
     assert.equal(first.applied.length, 7, 'all seven migrations apply');
@@ -557,8 +557,8 @@ test('TRUE parallel actors converge over real SQL (independent pooled clients)',
     await cataloged(app);
     // Two independent executors (separate pools) racing the same
     // subscription registration with the same content.
-    const poolA = new pg.Pool({ connectionString: app.live.dsn, max: 2 });
-    const poolB = new pg.Pool({ connectionString: app.live.dsn, max: 2 });
+    const poolA = createTestPool({ connectionString: app.live.dsn, max: 2 });
+    const poolB = createTestPool({ connectionString: app.live.dsn, max: 2 });
     const executorA = poolExecutor(poolA);
     const executorB = poolExecutor(poolB);
     const authA = createAuthModule({ executor: executorA });

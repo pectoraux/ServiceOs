@@ -59,7 +59,7 @@ import { createOrganizationsModule } from '../src/modules/organizations/index.js
 import { createWorkModule } from '../src/modules/work/index.js';
 import { createPoliciesModule } from '../src/modules/policies/index.js';
 import { createWorkflowModule, WorkflowError } from '../src/modules/workflow/index.js';
-import { createLiveTestDatabase, liveDatabaseRequested, type LiveDatabase } from './helpers/live-database.js';
+import { createLiveTestDatabase, createTestPool, liveDatabaseRequested, type LiveDatabase } from './helpers/live-database.js';
 import type { Principal } from '../src/modules/auth/index.js';
 import type { WorkStatus } from '../src/modules/workflow/index.js';
 
@@ -136,7 +136,7 @@ async function preparedLive(
   poolOptions: { max?: number; connectionTimeoutMillis?: number } = {},
 ): Promise<LiveApp> {
   const live = await createLiveTestDatabase();
-  const pool = new pg.Pool({ connectionString: live.dsn, max: 8, ...poolOptions });
+  const pool = createTestPool({ connectionString: live.dsn, max: 8, ...poolOptions });
   await applyMigrationsPinned(pool, migrations());
   const executor = poolExecutor(pool);
   const auth = createAuthModule({ executor });

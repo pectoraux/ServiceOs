@@ -29,6 +29,7 @@ import {
   checkServiceVerticalBoundaries,
   checkBillingBoundaries,
   checkZeckBoundaries,
+  checkEvidenceBoundaries,
   readProgramState,
   currentLiveWorkOrder,
   GovernanceError,
@@ -77,6 +78,7 @@ function main(): void {
     ...checkServiceVerticalBoundaries({ srcRoot }),
     ...checkBillingBoundaries({ srcRoot }),
     ...checkZeckBoundaries({ srcRoot, migrationsDir: resolve(repoRoot, 'db/migrations') }),
+    ...checkEvidenceBoundaries({ srcRoot, migrationsDir: resolve(repoRoot, 'db/migrations') }),
   ];
   if (violations.length > 0) {
     for (const violation of violations) {
@@ -111,6 +113,9 @@ function main(): void {
   );
   console.log(
     `zeck: single AI execution integration boundary, one provider-neutral port, reference-shaped durable surface with no lifecycle or credential columns, no module consumes the boundary yet (no violations)`,
+  );
+  console.log(
+    `evidence: single business evidence and outcome-verification authority, immutable attributable ledgers, no AI evaluator surface, no parallel AI execution evidence store, no module consumes the authority yet (no violations)`,
   );
 
   // 3. Canonical governance state: frontier + Work Order identity (AC-4).

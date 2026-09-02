@@ -35,6 +35,7 @@ import { createVerticalsModule } from './modules/verticals/index.js';
 import { createZeckModule } from './modules/zeck/index.js';
 import { createServicesModule } from './modules/services/index.js';
 import { createBillingModule } from './modules/billing/index.js';
+import { createEvidenceModule } from './modules/evidence/index.js';
 
 import auth from './modules/auth/index.js';
 import organizations from './modules/organizations/index.js';
@@ -219,6 +220,23 @@ export async function main(): Promise<void> {
     interactions: interactionsModule,
   });
 
+  // Business evidence & outcome-verification authority (/evidence,
+  // WORK-007; architecture-lock #4): the immutable attributable
+  // business-evidence ledger + the deterministic outcome-verification
+  // decision ledger. It consumes the single authorization chain and
+  // /work's public read (attribution validation, read-only — /evidence
+  // never mutates work state). Business verification is a ServiceOS
+  // business authority concept: no AI evaluator surface, no foreign AI
+  // execution state (a foreign execution claim can be cited only as an
+  // opaque provenance reference; a successful AI execution NEVER
+  // becomes a satisfied business outcome by itself). No HTTP surface
+  // (WORK-012 owns the control-plane API).
+  const evidenceModule = createEvidenceModule({
+    executor,
+    tenancy: organizationsModule,
+    work: workModule,
+  });
+
   const modules = registerModules(SERVICE_MODULES);
   const server = composeServer({
     modules,
@@ -256,6 +274,7 @@ export async function main(): Promise<void> {
     servicesAuthority: servicesModule !== null ? 'composed' : 'missing',
     billingAuthority: billingModule !== null ? 'composed' : 'missing',
     zeckBoundary: zeckModule !== null ? 'composed (closed: no gateway)' : 'missing',
+    evidenceAuthority: evidenceModule !== null ? 'composed' : 'missing',
     registeredAdapterCapabilities: adapterRegistry.describe().length,
   });
 }

@@ -39,7 +39,7 @@ import { applyMigrations, withTransactionOn, type Migration, type TransactionalE
 import { createAuthModule } from '../src/modules/auth/index.js';
 import { createOrganizationsModule } from '../src/modules/organizations/index.js';
 import { createPoliciesModule, PolicyError } from '../src/modules/policies/index.js';
-import { createLiveTestDatabase, liveDatabaseRequested, type LiveDatabase } from './helpers/live-database.js';
+import { createLiveTestDatabase, createTestPool, liveDatabaseRequested, type LiveDatabase } from './helpers/live-database.js';
 import type { Principal } from '../src/modules/auth/index.js';
 
 const SKIP = !liveDatabaseRequested();
@@ -105,7 +105,7 @@ interface LiveApp {
 /** Fresh pool + composed modules over a disposable migrated database. */
 async function preparedLive(): Promise<LiveApp> {
   const live = await createLiveTestDatabase();
-  const pool = new pg.Pool({ connectionString: live.dsn, max: 8 });
+  const pool = createTestPool({ connectionString: live.dsn, max: 8 });
   await applyMigrationsPinned(pool, migrations());
   const executor = poolExecutor(pool);
   const auth = createAuthModule({ executor });
@@ -123,7 +123,7 @@ async function preparedLive(): Promise<LiveApp> {
 }
 
 function policiesOverOwnPool(app: LiveApp): { module: ReturnType<typeof createPoliciesModule>; pool: pg.Pool } {
-  const pool = new pg.Pool({ connectionString: app.live.dsn, max: 4 });
+  const pool = createTestPool({ connectionString: app.live.dsn, max: 4 });
   const module = createPoliciesModule({ executor: poolExecutor(pool), tenancy: app.organizations });
   return { module, pool };
 }
@@ -153,7 +153,7 @@ function isPolicyError(code: string): (error: unknown) => boolean {
 
 test('live: migrations 0001+0002+0003 apply once and re-runs are no-ops', { skip: SKIP }, async () => {
   const live = await createLiveTestDatabase();
-  const pool = new pg.Pool({ connectionString: live.dsn });
+  const pool = createTestPool({ connectionString: live.dsn });
   try {
     const first = await applyMigrationsPinned(pool, migrations());
     assert.equal(first.applied.length, 3);

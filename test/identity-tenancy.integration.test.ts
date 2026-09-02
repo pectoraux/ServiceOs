@@ -33,7 +33,7 @@ import { applyMigrations, withTransactionOn, type Migration, type TransactionalE
 import type { MigrationReport } from '../src/platform/persistence/migrations.js';
 import { createAuthModule } from '../src/modules/auth/index.js';
 import { createOrganizationsModule, OrganizationsError } from '../src/modules/organizations/index.js';
-import { createLiveTestDatabase, liveDatabaseRequested, type LiveDatabase } from './helpers/live-database.js';
+import { createLiveTestDatabase, createTestPool, liveDatabaseRequested, type LiveDatabase } from './helpers/live-database.js';
 
 const SKIP = !liveDatabaseRequested();
 const PASSWORD = 'correct horse battery 7';
@@ -79,7 +79,7 @@ function migration(): Migration {
 /** Fresh pool + modules over a disposable database with migration 0001 applied. */
 async function preparedLive(): Promise<{ live: LiveDatabase; pool: pg.Pool; auth: ReturnType<typeof createAuthModule>; organizations: ReturnType<typeof createOrganizationsModule> }> {
   const live = await createLiveTestDatabase();
-  const pool = new pg.Pool({ connectionString: live.dsn, max: 8 });
+  const pool = createTestPool({ connectionString: live.dsn, max: 8 });
   await applyMigrationsPinned(pool, [migration()]);
   const executor = poolExecutor(pool);
   const auth = createAuthModule({ executor });
@@ -93,7 +93,7 @@ async function preparedLive(): Promise<{ live: LiveDatabase; pool: pg.Pool; auth
 
 test('live: migration 0001 applies once and re-runs are no-ops', { skip: SKIP }, async () => {
   const live = await createLiveTestDatabase();
-  const pool = new pg.Pool({ connectionString: live.dsn });
+  const pool = createTestPool({ connectionString: live.dsn });
   try {
     const first = await applyMigrationsPinned(pool, [migration()]);
     assert.equal(first.applied.length + first.skipped, 1);

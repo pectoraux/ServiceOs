@@ -23,7 +23,7 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 import { createPersistence } from '../src/platform/persistence/index.js';
 import { applyMigrations, type Migration } from '../src/platform/persistence/migrations.js';
-import { createLiveTestDatabase, liveDatabaseRequested, type LiveDatabase } from './helpers/live-database.js';
+import { createLiveTestDatabase, createTestPool, liveDatabaseRequested, type LiveDatabase } from './helpers/live-database.js';
 
 const SKIP = !liveDatabaseRequested();
 
@@ -62,7 +62,7 @@ test('live: migrations apply once, converge on re-run and under parallel runners
 
 test('live: direct-pool migration batches are applied through a pinned client (defect regression)', { skip: SKIP }, async () => {
   const live = await createLiveTestDatabase();
-  const pool = new pg.Pool({ connectionString: live.dsn });
+  const pool = createTestPool({ connectionString: live.dsn });
   const smokeTable = `serviceos_integration_pinned_${Date.now()}`;
   const migrations: Migration[] = [
     { version: 1, name: 'baseline', sql: `CREATE TABLE IF NOT EXISTS ${smokeTable} (id INT PRIMARY KEY, tag TEXT NOT NULL)` },
