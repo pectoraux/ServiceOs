@@ -16,5 +16,5 @@
     ]
   ],
   "selectionRule": "Only dependency-eligible Work Orders with no uncoordinated protected-surface conflict may be activated.",
-  "rationale": "This is the future-only roadmap. WORK-001, WORK-002, WORK-003, WORK-014, WORK-004, WORK-015, WORK-009, WORK-011, WORK-005, WORK-007 and WORK-008 are complete. WORK-006 has been activated under issue #58 and is therefore removed from the future-only sequence and waves. Activation remains sequential under the current governance checker until the execution protocol is explicitly revised."
+  "rationale": "This is the future-only roadmap. WORK-001, WORK-002, WORK-003, WORK-014, WORK-004, WORK-015, WORK-009, WORK-011, WORK-005, WORK-007, WORK-008 and WORK-006 are complete. WORK-006 was activated under issue #58, implemented on feat/WORK-006-event-inbox-outbox, merged as 0d9f9960c3d6e0644e383916d154ed7a1e64a20f, and finalized by the Architect. WORK-010 and WORK-012 are now the dependency-eligible frontier; activation remains sequential under the current governance checker until the execution protocol is explicitly revised."
 }
