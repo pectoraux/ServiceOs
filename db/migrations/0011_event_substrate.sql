@@ -58,7 +58,7 @@ CREATE TABLE event_inbox (
   tenant_id       UUID NOT NULL REFERENCES org_service_tenants (id),
   -- The frozen provider-neutral event source (the /integrations
   -- capability classes; Zeck deliberately absent — /zeck's boundary).
-  source          TEXT NOT NULL CHECK (source IN (
+  source          TEXT NOT NULL CONSTRAINT event_inbox_source_domain CHECK (source IN (
     'email',
     'sms',
     'voice',
@@ -88,10 +88,10 @@ CREATE TABLE event_inbox (
   -- (identical re-delivery converges; divergence fails closed).
   delivery_hash   TEXT NOT NULL,
   -- The closed inbox lifecycle.
-  state           TEXT NOT NULL CHECK (state IN ('received','processing','consumed','failed','rejected')),
+  state           TEXT NOT NULL CONSTRAINT event_inbox_state_domain CHECK (state IN ('received','processing','consumed','failed','rejected')),
   -- The durable rejection evidence (state 'rejected' only; the closed
   -- /zeck-callback-vocabulary discipline).
-  rejection_code  TEXT CHECK (rejection_code IN ('unknown_event_type','invalid_payload','uncorrelated')),
+  rejection_code  TEXT CONSTRAINT event_inbox_rejection_code_domain CHECK (rejection_code IN ('unknown_event_type','invalid_payload','uncorrelated')),
   rejection_rejected_at TIMESTAMPTZ,
   -- The processing claim (the crash-window marker): present from
   -- claiming on; never removed (recovery REFRESHES it).
@@ -122,17 +122,21 @@ CREATE TABLE event_inbox (
   --   processing: the claim is set
   --   consumed  : claim + the consumption record are set
   --   failed    : claim + the failure record are set
-  CHECK ((state = 'received') = (claimed_by IS NULL AND claimed_at IS NULL
+  CONSTRAINT event_inbox_received_shape CHECK ((state = 'received') = (claimed_by IS NULL AND claimed_at IS NULL
                                   AND consumer_result IS NULL AND consumed_by IS NULL AND consumed_at IS NULL
                                   AND failure_code IS NULL AND failure_message IS NULL AND failure_failed_at IS NULL
                                   AND rejection_code IS NULL AND rejection_rejected_at IS NULL)),
-  CHECK ((state = 'rejected') = (rejection_code IS NOT NULL AND rejection_rejected_at IS NOT NULL)),
-  CHECK ((state IN ('processing','consumed','failed')) = (claimed_by IS NOT NULL AND claimed_at IS NOT NULL)),
-  CHECK ((state = 'rejected') = (claimed_by IS NULL AND claimed_at IS NULL
+  CONSTRAINT event_inbox_rejection_present CHECK ((state = 'rejected') = (rejection_code IS NOT NULL AND rejection_rejected_at IS NOT NULL)),
+  CONSTRAINT event_inbox_claim_present CHECK ((state IN ('processing','consumed','failed')) = (claimed_by IS NOT NULL AND claimed_at IS NOT NULL)),
+  -- A rejected delivery is evidence, never work: rejected rows carry NO
+  -- processing state. One-directional by design — RECEIVED rows also
+  -- carry no processing state (pinned by received_shape) and every
+  -- processing state carries its own claim (pinned by claim_present).
+  CONSTRAINT event_inbox_rejected_unprocessed CHECK (state <> 'rejected' OR (claimed_by IS NULL AND claimed_at IS NULL
                                   AND consumer_result IS NULL AND consumed_by IS NULL AND consumed_at IS NULL
                                   AND failure_code IS NULL AND failure_message IS NULL AND failure_failed_at IS NULL)),
-  CHECK ((state = 'consumed') = (consumer_result IS NOT NULL AND consumed_by IS NOT NULL AND consumed_at IS NOT NULL)),
-  CHECK ((state = 'failed') = (failure_code IS NOT NULL AND failure_message IS NOT NULL AND failure_failed_at IS NOT NULL))
+  CONSTRAINT event_inbox_consumed_shape CHECK ((state = 'consumed') = (consumer_result IS NOT NULL AND consumed_by IS NOT NULL AND consumed_at IS NOT NULL)),
+  CONSTRAINT event_inbox_failed_shape CHECK ((state = 'failed') = (failure_code IS NOT NULL AND failure_message IS NOT NULL AND failure_failed_at IS NOT NULL))
 );
 COMMENT ON TABLE event_inbox IS 'Durable external event inbox: one deduplicated delivery record per stable identity (tenant, source, external event id) with the claimed, idempotent processing lifecycle; rejected deliveries are durable evidence; the consumer records exactly one domain effect through the /interactions observation authority (/interactions event substrate, WORK-006)';
 
@@ -158,7 +162,7 @@ CREATE TABLE event_outbox (
   -- The frozen horizontal outbound event vocabulary (closed; extended
   -- only through future Work Orders' frozen scopes — never vertical
   -- meanings).
-  event_type      TEXT NOT NULL CHECK (event_type IN ('interaction.observed')),
+  event_type      TEXT NOT NULL CONSTRAINT event_outbox_event_type_domain CHECK (event_type IN ('interaction.observed')),
   -- The authority-DERIVED, pinned content (derived from the
   -- interaction authority's terminal observation at intent time; the
   -- caller supplies the subject and the destination, never the
@@ -184,7 +188,7 @@ CREATE TABLE event_outbox (
   -- Integrity hash over the canonical record core (tamper-evident).
   record_hash     TEXT NOT NULL,
   -- The closed outbox lifecycle.
-  state           TEXT NOT NULL CHECK (state IN ('intended','dispatching','dispatched','failed')),
+  state           TEXT NOT NULL CONSTRAINT event_outbox_state_domain CHECK (state IN ('intended','dispatching','dispatched','failed')),
   -- The dispatch claim (the crash-window marker): present from claiming
   -- on; never removed (recovery REFRESHES it).
   claimed_by      UUID REFERENCES auth_users (id),
@@ -209,16 +213,16 @@ CREATE TABLE event_outbox (
   --   dispatching: the claim is set
   --   dispatched: claim + the delivery acceptance are set
   --   failed    : claim + the failure record are set
-  CHECK ((state = 'intended') = (claimed_by IS NULL AND claimed_at IS NULL
+  CONSTRAINT event_outbox_intended_shape CHECK ((state = 'intended') = (claimed_by IS NULL AND claimed_at IS NULL
                                   AND provider IS NULL AND provider_reference IS NULL
                                   AND dispatched_at IS NULL AND dispatched_by IS NULL
                                   AND failure_code IS NULL AND failure_message IS NULL AND failure_failed_at IS NULL)),
-  CHECK ((state IN ('dispatching','dispatched','failed')) = (claimed_by IS NOT NULL AND claimed_at IS NOT NULL)),
-  CHECK ((state = 'dispatched') = (provider IS NOT NULL AND dispatched_at IS NOT NULL AND dispatched_by IS NOT NULL)),
-  CHECK ((state = 'failed') = (failure_code IS NOT NULL AND failure_message IS NOT NULL AND failure_failed_at IS NOT NULL)),
+  CONSTRAINT event_outbox_claim_present CHECK ((state IN ('dispatching','dispatched','failed')) = (claimed_by IS NOT NULL AND claimed_at IS NOT NULL)),
+  CONSTRAINT event_outbox_dispatched_shape CHECK ((state = 'dispatched') = (provider IS NOT NULL AND dispatched_at IS NOT NULL AND dispatched_by IS NOT NULL)),
+  CONSTRAINT event_outbox_failed_shape CHECK ((state = 'failed') = (failure_code IS NOT NULL AND failure_message IS NOT NULL AND failure_failed_at IS NOT NULL)),
   -- A provider reference without its provider is meaningless.
-  CHECK (provider_reference IS NULL OR provider IS NOT NULL),
-  CHECK ((policy_key IS NULL) = (policy_decision_id IS NULL))
+  CONSTRAINT event_outbox_provider_reference_pairing CHECK (provider_reference IS NULL OR provider IS NOT NULL),
+  CONSTRAINT event_outbox_policy_pairing CHECK ((policy_key IS NULL) = (policy_decision_id IS NULL))
 );
 COMMENT ON TABLE event_outbox IS 'Durable outbound event outbox: the authority-derived event intent persisted BEFORE any delivery attempt (never silently lost), dispatched through the provider-neutral event delivery port with a claimed, crash-recoverable, idempotent delivery lifecycle (/interactions event substrate, WORK-006)';
 

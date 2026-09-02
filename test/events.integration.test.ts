@@ -245,6 +245,30 @@ test('migrations 0001..0011 apply in order and are idempotent (live schema)', { 
 
 test('schema backstops: the closed vocabularies and the stable identity are physical (live)', { skip: SKIP }, async () => {
   await withLive(async (app) => {
+    // LEGAL SHAPES ARE ADMISSIBLE: a raw received row (all lifecycle
+    // columns null) and a raw rejected row (the rejection set, nothing
+    // else) both insert cleanly — the shape CHECKs admit every legal
+    // lifecycle shape (the regression that would have caught the CI
+    // defect where a biconditional wrongly required received rows to
+    // carry the claim/consumption/failure columns).
+    const legalReceived = crypto.randomUUID();
+    await app.pool.query(
+      `INSERT INTO event_inbox (id, tenant_id, source, external_event_id, event_type, occurred_at, payload, delivery_hash, state, received_by, record_hash)
+       VALUES ($1, $2, 'email', 'evt-legal-1', 'interaction.delivery_result', now(), '{}', 'h', 'received', $3, 'h')`,
+      [legalReceived, app.tenantId, app.owner.id],
+    );
+    const legalRejected = crypto.randomUUID();
+    await app.pool.query(
+      `INSERT INTO event_inbox (id, tenant_id, source, external_event_id, event_type, occurred_at, payload, delivery_hash, state, rejection_code, rejection_rejected_at, received_by, record_hash)
+       VALUES ($1, $2, 'email', 'evt-legal-2', 'weird.vertical.type', now(), '{}', 'h', 'rejected', 'unknown_event_type', now(), $3, 'h')`,
+      [legalRejected, app.tenantId, app.owner.id],
+    );
+    const legalOutbox = crypto.randomUUID();
+    await app.pool.query(
+      `INSERT INTO event_outbox (id, tenant_id, event_type, payload, destination, requested_by, input_hash, record_hash, state)
+       VALUES ($1, $2, 'interaction.observed', '{}', 'dest', $3, 'h', 'h', 'intended')`,
+      [legalOutbox, app.tenantId, app.owner.id],
+    );
     // The stable identity unique index exists.
     const indexes = await app.pool.query(
       `SELECT indexname FROM pg_indexes WHERE tablename = 'event_inbox' AND indexname = 'event_inbox_stable_identity'`,
@@ -261,7 +285,7 @@ test('schema backstops: the closed vocabularies and the stable identity are phys
          VALUES ($1, $2, 'email', 'evt-shape', 'interaction.delivery_result', now(), '{}', 'h', 'received', $3, now(), $3, 'h')`,
         [crypto.randomUUID(), app.tenantId, app.owner.id],
       ),
-      /violates check constraint/,
+      /violates check constraint "event_inbox_received_shape"/,
     );
     void interaction;
     // The closed source taxonomy: 'zeck' is not an event source (its
@@ -272,7 +296,7 @@ test('schema backstops: the closed vocabularies and the stable identity are phys
          VALUES ($1, $2, 'zeck', 'evt-z', 'interaction.delivery_result', now(), '{}', 'h', 'received', $3, 'h')`,
         [crypto.randomUUID(), app.tenantId, app.owner.id],
       ),
-      /violates check constraint/,
+      /violates check constraint "event_inbox_source_domain"/,
     );
     // The closed outbound event vocabulary (horizontal only).
     await assert.rejects(
@@ -281,7 +305,7 @@ test('schema backstops: the closed vocabularies and the stable identity are phys
          VALUES ($1, $2, 'construction.permit_approved', '{}', 'd', $3, 'h', 'h', 'intended')`,
         [crypto.randomUUID(), app.tenantId, app.owner.id],
       ),
-      /violates check constraint/,
+      /violates check constraint "event_outbox_event_type_domain"/,
     );
   });
 });

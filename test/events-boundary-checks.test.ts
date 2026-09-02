@@ -174,6 +174,37 @@ test('the migration pins the lifecycle shape invariants (schema-level backstops)
   assert.ok(/\(state = 'consumed'\) = \(consumer_result IS NOT NULL AND consumed_by IS NOT NULL AND consumed_at IS NOT NULL\)/.test(sql));
   assert.ok(/\(state = 'failed'\) = \(failure_code IS NOT NULL AND failure_message IS NOT NULL AND failure_failed_at IS NOT NULL\)/.test(sql));
   assert.ok(/\(state = 'dispatched'\) = \(provider IS NOT NULL AND dispatched_at IS NOT NULL AND dispatched_by IS NOT NULL\)/.test(sql));
+  // The rejected-rows-carry-no-processing-state invariant is a
+  // ONE-DIRECTIONAL implication: a biconditional would wrongly require
+  // RECEIVED rows to carry the claim/consumption/failure columns (the
+  // CI-found defect — received rows also carry them null).
+  assert.ok(
+    /CONSTRAINT event_inbox_rejected_unprocessed CHECK \(state <> 'rejected' OR \(claimed_by IS NULL AND claimed_at IS NULL/.test(sql),
+    'the rejected-unprocessed invariant is the one-directional implication',
+  );
+  assert.ok(!/\(state = 'rejected'\) = \(claimed_by IS NULL/.test(sql), 'the biconditional form of the rejected-unprocessed invariant is gone');
+  // The constraints are explicitly named (self-documenting violations).
+  for (const name of [
+    'event_inbox_source_domain',
+    'event_inbox_state_domain',
+    'event_inbox_rejection_code_domain',
+    'event_inbox_received_shape',
+    'event_inbox_rejection_present',
+    'event_inbox_claim_present',
+    'event_inbox_rejected_unprocessed',
+    'event_inbox_consumed_shape',
+    'event_inbox_failed_shape',
+    'event_outbox_event_type_domain',
+    'event_outbox_state_domain',
+    'event_outbox_intended_shape',
+    'event_outbox_claim_present',
+    'event_outbox_dispatched_shape',
+    'event_outbox_failed_shape',
+    'event_outbox_provider_reference_pairing',
+    'event_outbox_policy_pairing',
+  ]) {
+    assert.ok(new RegExp(`CONSTRAINT ${name}`).test(sql), `constraint ${name} is explicitly named`);
+  }
   // Tenancy discipline: both tables carry the tenant FK.
   assert.ok(/event_inbox[\s\S]*tenant_id\s+UUID NOT NULL REFERENCES org_service_tenants \(id\)/.test(sql));
   assert.ok(/event_outbox[\s\S]*tenant_id\s+UUID NOT NULL REFERENCES org_service_tenants \(id\)/.test(sql));
