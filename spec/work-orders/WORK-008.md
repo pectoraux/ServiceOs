@@ -1,6 +1,6 @@
 # WORK-008
 
-Status: planned
+Status: in_flight
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: HIGH_ASSURANCE
