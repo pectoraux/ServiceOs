@@ -246,9 +246,13 @@ test('schema backstops: keyed identity, correlation identity, execution-referenc
       /duplicate key|violates unique/,
     );
     // Reference/submission pairing CHECK: a reference without submission
-    // metadata is impossible.
+    // metadata is impossible (the row carries BOTH after a successful
+    // submit, so the plant strips the metadata while pinning a reference).
     await assert.rejects(
-      app.pool.query(`UPDATE zeck_execution_intents SET zeck_execution_id = 'zeck-exec-x' WHERE id = $1`, [intentId]),
+      app.pool.query(
+        `UPDATE zeck_execution_intents SET zeck_execution_id = 'zeck-exec-x', submitted_by = NULL, submitted_at = NULL WHERE id = $1`,
+        [intentId],
+      ),
       /violates check/,
     );
     // Disposition/rejection pairing CHECK on the delivery ledger.
@@ -409,13 +413,23 @@ test('TRUE parallel actors converge over real SQL (independent pooled clients)',
     const intentRows = await app.pool.query(`SELECT COUNT(*)::int AS n FROM zeck_execution_intents WHERE tenant_id = $1`, [app.tenantId]);
     assert.equal((intentRows.rows[0] as { n: number }).n, 1);
 
-    // Same-key DIVERGENT submissions on a FRESH key: exactly one typed
-    // conflict (the post-lock idempotency re-check makes the loser's
-    // code identical to the serialized loser).
-    const divA = intentInput(app, 'parallel-divergent');
-    (divA as { objective: string }).objective = 'Objective A';
-    const divB = intentInput(app, 'parallel-divergent');
-    (divB as { objective: string }).objective = 'Objective B';
+    // Same-key DIVERGENT submissions on a FRESH key AND a fresh attempt
+    // (the first race durably linked the shared attempt; a fresh key
+    // against a linked attempt is ATTEMPT_ALREADY_LINKED for both racers
+    // — the WORK-009 fresh-slot lesson applied to the correlation slot).
+    const divergentWork = await app.work.createWork(app.colleague, {
+      tenantId: app.tenantId,
+      workType: 'AssessDocument',
+      title: 'Divergent race work',
+    });
+    const divergentAttempt = await app.work.createAttempt(app.colleague, app.tenantId, divergentWork.work.id);
+    const divA = {
+      ...intentInput(app, 'parallel-divergent'),
+      serviceWorkId: divergentWork.work.id,
+      workAttemptId: divergentAttempt.attempt.id,
+      objective: 'Objective A',
+    };
+    const divB = { ...divA, objective: 'Objective B' };
     const [div1, div2] = await Promise.allSettled([
       app.zeck.submitExecutionIntent(app.owner, divA),
       zeckB.submitExecutionIntent(app.colleague, divB),
@@ -426,10 +440,17 @@ test('TRUE parallel actors converge over real SQL (independent pooled clients)',
       await expectCode(failed[0].reason, 'IDEMPOTENCY_INPUT_CONFLICT');
     }
 
-    // The same attempt under DIFFERENT keys on a fresh pair: exactly one
-    // ATTEMPT_ALREADY_LINKED.
-    const keyA = intentInput(app, 'parallel-key-a');
-    const keyB = intentInput(app, 'parallel-key-b');
+    // The same FRESH attempt under different keys: exactly one
+    // ATTEMPT_ALREADY_LINKED (the unique (tenant, attempt) index
+    // backstops the store's serialized check).
+    const linkedWork = await app.work.createWork(app.colleague, {
+      tenantId: app.tenantId,
+      workType: 'AssessDocument',
+      title: 'Linked race work',
+    });
+    const linkedAttempt = await app.work.createAttempt(app.colleague, app.tenantId, linkedWork.work.id);
+    const keyA = { ...intentInput(app, 'parallel-key-a'), serviceWorkId: linkedWork.work.id, workAttemptId: linkedAttempt.attempt.id };
+    const keyB = { ...intentInput(app, 'parallel-key-b'), serviceWorkId: linkedWork.work.id, workAttemptId: linkedAttempt.attempt.id };
     const [link1, link2] = await Promise.allSettled([
       app.zeck.submitExecutionIntent(app.owner, keyA),
       zeckB.submitExecutionIntent(app.colleague, keyB),
@@ -545,20 +566,31 @@ test('cross-tenant reads carry the tenant predicate against real rows', { skip: 
     assert.deepEqual(await app.zeck.listCallbackEvents(otherOwner, other.tenant.id), []);
     const error = await zeckError(app.zeck.getExecutionIntent(otherOwner, app.tenantId, intent.id));
     assert.equal(error.code, 'TENANT_FORBIDDEN');
-    // Another tenant's work identity is invisible through the boundary.
-    const otherWork = await app.work.createWork(otherOwner, { tenantId: other.tenant.id, workType: 'T', title: 'Other' });
-    const otherAttempt = await app.work.createAttempt(otherOwner, other.tenant.id, otherWork.work.id);
+    // Tenant A's work identity is INVISIBLE from tenant B: the cross
+    // reference fails closed at the work-tenant predicate (the work
+    // lookup carries its own tenant predicate — isolation at every layer).
     const crossError = await zeckError(
       app.zeck.submitExecutionIntent(otherOwner, {
         ...intentInput(app, 'iso-cross'),
         tenantId: other.tenant.id,
-        serviceWorkId: otherWork.work.id,
-        workAttemptId: otherAttempt.attempt.id,
+        serviceWorkId: app.workId,
+        workAttemptId: app.attemptId,
       }),
     );
-    // The other tenant's own work is valid — the CROSS reference to
-    // tenant A's attempt is what must fail.
-    assert.notEqual(crossError.code, 'TENANT_FORBIDDEN');
+    assert.equal(crossError.code, 'WORK_NOT_FOUND');
+    // The other tenant's OWN work is a legitimate submission target.
+    const otherWork = await app.work.createWork(otherOwner, { tenantId: other.tenant.id, workType: 'T', title: 'Other' });
+    const otherAttempt = await app.work.createAttempt(otherOwner, other.tenant.id, otherWork.work.id);
+    const legitimate = await app.zeck.submitExecutionIntent(otherOwner, {
+      ...intentInput(app, 'iso-legit'),
+      tenantId: other.tenant.id,
+      serviceWorkId: otherWork.work.id,
+      workAttemptId: otherAttempt.attempt.id,
+    });
+    assert.equal(legitimate.dispatched, true);
+    assert.deepEqual(await app.zeck.listExecutionIntents(app.owner, app.tenantId), [
+      await app.zeck.getExecutionIntent(app.owner, app.tenantId, intent.id),
+    ]);
     void intent;
   } finally {
     await teardown(app);

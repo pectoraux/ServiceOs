@@ -436,6 +436,34 @@ test('malformed submit input fails closed before any durable effect', async () =
   assert.equal((await app.zeck.listExecutionIntents(owner, tenantId)).length, 0);
 });
 
+test('out-of-band mutation of stored rows is detected on read (tamper-evident surface)', async () => {
+  const base_ = await base();
+  const { app, owner, tenantId } = base_;
+  const { intentId, executionId } = await submitted(base_);
+  await app.zeck.ingestCallback(owner, tenantId, callbackInput('evt-tamper-env', executionId));
+  // Intent content tamper: a schema-legal, hash-covered column.
+  const stored = app.zeckStore.intents.get(intentId);
+  assert.ok(stored !== undefined);
+  stored.objective = 'A tampered objective';
+  const intentError = await zeckError(app.zeck.getExecutionIntent(owner, tenantId, intentId));
+  assert.equal(intentError.code, 'INTENT_RECORD_TAMPERED');
+  stored.objective = 'Assess whether the uploaded certificate satisfies the compliance policy';
+  // Reference/ingestion tamper: the record hash covers the foreign
+  // reference state and the last-seen cursor.
+  stored.lastSeenEventId = 'evt-forged';
+  const cursorError = await zeckError(app.zeck.listExecutionIntents(owner, tenantId));
+  assert.equal(cursorError.code, 'INTENT_RECORD_TAMPERED');
+  stored.lastSeenEventId = 'evt-tamper-env';
+  // Event payload tamper: the immutable delivery row is hash-verified.
+  const eventId = app.zeckStore.eventsByEventId.get(`${tenantId}:evt-tamper-env`);
+  assert.ok(eventId !== undefined);
+  const storedEvent = app.zeckStore.events.get(eventId);
+  assert.ok(storedEvent !== undefined);
+  storedEvent.observed = { artifactRefs: [], evidenceRefs: [], warnings: [] };
+  const eventError = await zeckError(app.zeck.listCallbackEvents(owner, tenantId));
+  assert.equal(eventError.code, 'EVENT_RECORD_TAMPERED');
+});
+
 test('reads distinguish missing from present', async () => {
   const { app, owner, tenantId } = await base();
   const intentError = await zeckError(app.zeck.getExecutionIntent(owner, tenantId, '00000000-0000-4000-8000-000000000000'));

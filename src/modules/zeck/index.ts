@@ -510,7 +510,12 @@ export function createZeckModule(options: ZeckModuleOptions): ZeckModule {
   async function getExecutionIntent(principal: Principal, tenantId: string, intentId: string): Promise<ZeckIntentRecord> {
     await requireTenantAccess(principal, tenantId, 'read');
     validateUuid(intentId, 'intentId');
-    const intent = await store.findIntent(tenantId, intentId);
+    let intent: ZeckIntentRecord | null;
+    try {
+      intent = await store.findIntent(tenantId, intentId);
+    } catch (error) {
+      mapStoreError(error);
+    }
     if (intent === null) {
       throw new ZeckError('INTENT_NOT_FOUND', `execution intent ${intentId} not found`);
     }
@@ -525,7 +530,11 @@ export function createZeckModule(options: ZeckModuleOptions): ZeckModule {
     await requireTenantAccess(principal, tenantId, 'read');
     if (filter?.serviceWorkId !== undefined) validateUuid(filter.serviceWorkId, 'filter.serviceWorkId');
     if (filter?.workAttemptId !== undefined) validateUuid(filter.workAttemptId, 'filter.workAttemptId');
-    return store.listIntents(tenantId, filter);
+    try {
+      return await store.listIntents(tenantId, filter);
+    } catch (error) {
+      mapStoreError(error);
+    }
   }
 
   async function ingestCallback(principal: Principal, tenantId: string, raw: ZeckCallbackInput): Promise<IngestCallbackResult> {
@@ -630,7 +639,12 @@ export function createZeckModule(options: ZeckModuleOptions): ZeckModule {
   async function getCallbackEvent(principal: Principal, tenantId: string, eventId: string): Promise<ZeckCallbackEventRecord> {
     await requireTenantAccess(principal, tenantId, 'read');
     const normalized = validateExternalId(eventId, 'eventId');
-    const event = await store.findCallbackEvent(tenantId, normalized);
+    let event: ZeckCallbackEventRecord | null;
+    try {
+      event = await store.findCallbackEvent(tenantId, normalized);
+    } catch (error) {
+      mapStoreError(error);
+    }
     if (event === null) {
       throw new ZeckError('EVENT_NOT_FOUND', `callback event ${normalized} not found`);
     }
@@ -644,7 +658,11 @@ export function createZeckModule(options: ZeckModuleOptions): ZeckModule {
   ): Promise<ZeckCallbackEventRecord[]> {
     await requireTenantAccess(principal, tenantId, 'read');
     if (filter?.intentId !== undefined) validateUuid(filter.intentId, 'filter.intentId');
-    return store.listCallbackEvents(tenantId, filter);
+    try {
+      return await store.listCallbackEvents(tenantId, filter);
+    } catch (error) {
+      mapStoreError(error);
+    }
   }
 
   return {
