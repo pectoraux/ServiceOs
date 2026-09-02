@@ -67,7 +67,7 @@ See TEMPLATE.md.
 
 ## Evidence
 
-Status: implemented; implementation revision `84fd0503cfa855643a7ca7c16fe01a6e0b6b2d60` on branch `feat/WORK-008-business-approval`; PR and CI verification pending.
+Status: implemented; final substantive evidence head `9db2e48a16bd8e29e7c45a9d19b17a0432676a1c` on PR #56; merge/finalization authority: Architect.
 
 ### What was implemented
 
@@ -88,6 +88,8 @@ Status: implemented; implementation revision `84fd0503cfa855643a7ca7c16fe01a6e0b
 - `npm test` locally — 799 tests / 703 pass / 0 fail / 96 skipped (the 96 live-PostgreSQL proofs execute in CI only — 84 pre-existing + the 12 new approvals proofs; no local PostgreSQL in the implementation environment). The 96 skips are identical in kind to the pre-repair suite: the repair/implementation introduced zero new skip classes.
 - Implementation surface: `git show 84fd050 --stat` — exactly the 17 files of the authorized surface (module, migration, governance wiring, tests, helpers), +4882/−8; no production file outside the /approvals authority, the governance wiring and the composition root was touched.
 - PR #56 opened from `feat/WORK-008-business-approval` (implementation revision 84fd050 + evidence 622ccec).
+- CI run 33661195741 at final substantive evidence head `9db2e48a16bd8e29e7c45a9d19b17a0432676a1c` — repository-governance PASS, foundation PASS: **799/799 tests, 0 fail, 0 skipped**, including all 96 live-PostgreSQL proofs (84 pre-existing + the 12 WORK-008 live proofs) and the repaired zeck same-key convergence proof.
+- Historical defects (both test-side, root-caused below): CI run 33659722044 at 622ccec — repository-governance PASS, foundation 794/799 (5 approvals live proofs: the async-validator discipline); CI run 33660272203 at db04dc3 — repository-governance PASS, foundation 793/799 (the same 5 on the second validator layer + the pre-existing /zeck same-key live flake).
 
 ### Defects found and fixed during live verification
 
