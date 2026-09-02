@@ -1,6 +1,6 @@
 # WORK-011
 
-Status: in_flight
+Status: complete
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: HIGH_ASSURANCE
@@ -65,7 +65,7 @@ See TEMPLATE.md.
 
 ## Evidence
 
-Status: implemented; awaiting Architect verification.
+Status: verified and approved by Architect; merged.
 
 ### What was implemented
 
@@ -93,9 +93,8 @@ The first CI run of the implementation head (run 33584328571, commit 1242076) fa
 - `npm run build` — PASS.
 - `npm run check` (build + config + architecture structural checks incl. the billing boundary checks + governance state + `scripts/governance-check.py`) — PASS.
 - `npm test` locally — 562 tests / 0 fail / 66 skipped (the 66 live-PostgreSQL proofs execute in CI only; no local PostgreSQL in the implementation environment).
-- CI run 33584908407 (commit 3b1db67) — repository-governance PASS, foundation PASS: **628/628 tests, 0 fail, 0 skipped**, including all 66 live-PostgreSQL proofs and all 7 WORK-011 live proofs.
-- Composition: `billingAuthority: composed` (16 modules; no HTTP surface).
-- Merge state: PR #35 clean.
+- CI run 33585142160 at final implementation revision `8035a1ba80ac3329c648fd650528d8e62f47b9f0` — repository-governance PASS, foundation PASS: **628/628 tests, 0 fail, 0 skipped**, including all 66 live-PostgreSQL proofs and all 7 WORK-011 live proofs.
+- Architect independently verified the final PR head `8035a1b`; PR #35 merged as `bd11baa497574e576db57c0bc8d6035bb91eec6d`.
 
 ### Known limitations
 
@@ -105,3 +104,10 @@ The first CI run of the implementation head (run 33584328571, commit 1242076) fa
 - Proration of recurring charges (partial-month activation) is out of scope: a settled period charges the plan's full recurring component.
 - Live-PostgreSQL proofs execute in CI only (no local PostgreSQL in the implementation environment).
 - No real external cost-statement ingestion exists yet: cost references are recorded through the module surface; the Zeck-side publisher integration arrives with WORK-005/006 territory.
+
+## Finalization
+
+Implementation revision: `8035a1ba80ac3329c648fd650528d8e62f47b9f0`
+Merge commit: `bd11baa497574e576db57c0bc8d6035bb91eec6d`
+Architect verdict: approved
+Finalized: 2026-09-02
