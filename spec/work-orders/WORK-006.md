@@ -1,6 +1,6 @@
 # WORK-006
 
-Status: in_flight
+Status: complete
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: HIGH_ASSURANCE
@@ -83,7 +83,7 @@ The activation decision was made from frozen v1.0 architecture and completed WOR
 
 ## Evidence
 
-Status: implemented, local gates green; PR submitted for Architect review.
+Status: implemented and verified; PR #59 merged; canonical finalization recorded.
 
 ### What was implemented
 
@@ -111,6 +111,11 @@ The first CI run of the implementation head (run 33675388927, commit 7135b34) fa
 - `npm run check` (EXPECT_BRANCH=feat/WORK-006-event-inbox-outbox) — PASS (all structural checks including the new event boundary checks; governance state internally consistent).
 - `npm test` (local) — 860 tests / 753 pass / 0 fail / 107 skipped (live-PostgreSQL proofs are CI-gated).
 - CI run 33678152864 at the final head f722c13: repository-governance PASS, foundation PASS — 860/860 tests passing, 0 fail, 0 skipped, including all 107 live-PostgreSQL proofs (96 pre-existing + 11 new event-substrate proofs).
+- Post-merge CI run 33682588935 at merge commit `0d9f9960c3d6e0644e383916d154ed7a1e64a20f`: repository-governance PASS and foundation PASS.
+
+### Finalization
+
+PR #59 (`feat/WORK-006-event-inbox-outbox`) was merged as `0d9f9960c3d6e0644e383916d154ed7a1e64a20f` after the final implementation/evidence head `6dcaa4bfa1b6a96dbf938da7cd9167b713945678` had green final-head CI. The Architect independently accepted the implementation, and canonical governance state was reconciled to the actual merge commit. WORK-006 is complete; WORK-010 and WORK-012 are the dependency-eligible next frontier, with WORK-010 selected as the next sequential activation candidate.
 
 ### Known limitations
 
