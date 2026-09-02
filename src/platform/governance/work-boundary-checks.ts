@@ -18,8 +18,14 @@
  *   lifecycle). Violations:
  *   * any module exporting a Zeck execution lifecycle/state entry point
  *     (violation `zeck-state-machine`);
- *   * any migration creating a `zeck`-owned table (a shadow execution
- *     store, violation `zeck-schema-in-serviceos`).
+ *   * any migration creating a shadow Zeck execution store (violation
+ *     `zeck-schema-in-serviceos`). Since WORK-005 the /zeck module OWNS a
+ *     durable reference surface (`zeck_`-prefixed tables in the
+ *     `zeck`-named migration): executable SQL may reference "zeck" ONLY
+ *     there — every created table `zeck_`-prefixed. The deep shape rules
+ *     (no execution-lifecycle columns, no credential columns on the
+ *     `zeck_` tables) are enforced by `checkZeckBoundaries` (WORK-005
+ *     governance wiring); this check keeps the boundary-wide tripwire.
  *
  * - WORK/ATTEMPT SEPARATION (AC-2: WorkAttempt is distinct from external
  *   Zeck executions): /work exports and the WORK-003-owned migration
@@ -100,6 +106,10 @@ export const ALLOWED_MIGRATION_TABLE_PREFIXES: readonly string[] = [
   'services_',
   // WORK-011 owns the billing tables (migration 0007).
   'billing_',
+  // WORK-005 owns the /zeck reference/observation tables (migration
+  // 0008: execution-intent linkage + translated callback ledger — no
+  // Zeck execution lifecycle, checked by checkZeckBoundaries).
+  'zeck_',
 ];
 
 const MODULE_WORK = 'work';
@@ -262,13 +272,28 @@ export function checkWorkBoundaries(options: WorkBoundaryCheckOptions): Architec
     // here"); the schema checks apply to executable SQL only.
     const sql = stripSqlComments(readFileSync(migrationFile, 'utf8'));
     if (/zeck/i.test(sql)) {
-      violations.push(
-        violation(
-          'zeck-schema-in-serviceos',
-          'migration references "zeck"; ServiceOS persists no Zeck execution state (architecture-lock #19; the /zeck boundary persists references, not a lifecycle)',
-          migrationFile,
-        ),
-      );
+      // WORK-005 refinement: executable SQL may reference "zeck" ONLY in
+      // the /zeck-owned migration — the file is `zeck`-named AND every
+      // created table is `zeck_`-prefixed (the reference/observation
+      // surface; the deep shape rules — no execution-lifecycle columns,
+      // no credential columns — are enforced by checkZeckBoundaries).
+      // Any other zeck reference in a migration is a shadow-lifecycle
+      // or boundary leak and fails closed exactly as before.
+      const basename = migrationFile.split(/[\\/]/).pop() ?? '';
+      const tables = extractCreatedTables(sql);
+      const owned =
+        basename.includes('zeck') &&
+        tables.length > 0 &&
+        tables.every((table) => table.startsWith('zeck_'));
+      if (!owned) {
+        violations.push(
+          violation(
+            'zeck-schema-in-serviceos',
+            'migration references "zeck" outside the /zeck-owned reference migration (a `zeck`-named migration whose created tables are all `zeck_`-prefixed); ServiceOS persists no Zeck execution state (architecture-lock #19; the /zeck boundary persists references, not a lifecycle)',
+            migrationFile,
+          ),
+        );
+      }
     }
     for (const table of extractCreatedTables(sql)) {
       if (!ALLOWED_MIGRATION_TABLE_PREFIXES.some((prefix) => table.startsWith(prefix))) {
@@ -284,6 +309,34 @@ export function checkWorkBoundaries(options: WorkBoundaryCheckOptions): Architec
   }
 
   return violations;
+}
+
+/**
+ * Extract the column names of one CREATE TABLE statement's columns.
+ * Exported for reuse by the WORK-005 Zeck boundary checks (the shape
+ * rules over the `zeck_` reference tables live there).
+ */
+export function extractCreatedColumns(sql: string, table: string): string[] {
+  const pattern = new RegExp(`CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${table}\\s*\\(([\\s\\S]*?)\\n\\)`, 'i');
+  const match = pattern.exec(sql);
+  if (match === null) {
+    return [];
+  }
+  const body = match[1] as string;
+  const columns: string[] = [];
+  for (const rawLine of body.split('\n')) {
+    const line = rawLine.trim().replace(/,$/, '');
+    if (line.length === 0 || line.startsWith('--')) {
+      continue;
+    }
+    const first = line.split(/\s+/)[0] as string;
+    // Skip table-level constraint clauses.
+    if (/^(FOREIGN|PRIMARY|UNIQUE|CHECK|CONSTRAINT|EXCLUDE)$/i.test(first)) {
+      continue;
+    }
+    columns.push(first.toLowerCase());
+  }
+  return columns;
 }
 
 /**

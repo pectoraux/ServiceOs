@@ -28,6 +28,7 @@ import {
   checkExternalInteractionBoundaries,
   checkServiceVerticalBoundaries,
   checkBillingBoundaries,
+  checkZeckBoundaries,
   readProgramState,
   currentLiveWorkOrder,
   GovernanceError,
@@ -75,6 +76,7 @@ function main(): void {
     ...checkExternalInteractionBoundaries({ srcRoot }),
     ...checkServiceVerticalBoundaries({ srcRoot }),
     ...checkBillingBoundaries({ srcRoot }),
+    ...checkZeckBoundaries({ srcRoot, migrationsDir: resolve(repoRoot, 'db/migrations') }),
   ];
   if (violations.length > 0) {
     for (const violation of violations) {
@@ -106,6 +108,9 @@ function main(): void {
   );
   console.log(
     `billing: single customer-economics authority, no provider-level AI usage/cost authority anywhere, no Zeck import in /billing, billing binds the catalog and meters real work, cost references stay opaque (no violations)`,
+  );
+  console.log(
+    `zeck: single AI execution integration boundary, one provider-neutral port, reference-shaped durable surface with no lifecycle or credential columns, no module consumes the boundary yet (no violations)`,
   );
 
   // 3. Canonical governance state: frontier + Work Order identity (AC-4).
