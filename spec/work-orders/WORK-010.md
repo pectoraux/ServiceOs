@@ -1,9 +1,12 @@
 # WORK-010
 
-Status: planned
+Status: in_flight
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: CRITICAL
+Activation Issue: #61
+Implementation Branch: `feat/WORK-010-construction-compliance`
+Activation Baseline: `0ef7148900572be30fc88af590e16633911aec61`
 
 ## Objective
 
@@ -82,3 +85,15 @@ construction vertical, compliance entities/work types, integrations via public p
 ## Definition Of Done
 
 See TEMPLATE.md.
+
+## Activation Record
+
+Activated by Architect on 2026-09-02.
+
+- Activation issue: `#61`
+- Activation baseline: `0ef7148900572be30fc88af590e16633911aec61`
+- Assurance profile: `CRITICAL`
+- Implementation authority: Z.ai
+- Review/merge/finalization authority: Architect
+
+The activation decision is from frozen v1.0 architecture with WORK-005, WORK-006, WORK-007, WORK-009, WORK-014 and WORK-015 complete. No architecture change is authorized by this Work Order.
