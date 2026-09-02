@@ -1,6 +1,6 @@
 # WORK-008
 
-Status: in_flight
+Status: complete
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: HIGH_ASSURANCE
@@ -67,7 +67,7 @@ See TEMPLATE.md.
 
 ## Evidence
 
-Status: implemented; final substantive evidence head `9db2e48a16bd8e29e7c45a9d19b17a0432676a1c` on PR #56; merge/finalization authority: Architect.
+Status: complete; Architect-approved on 2026-09-02; implementation/evidence head `89fb3b21c89373e02114cbd0a60e835093330bff`; merged by Architect as `8eda809c93bed88dc94fcfe46dc3411b2d3900a6` (PR #56); post-merge CI run `33666912564` is green.
 
 ### What was implemented
 
@@ -89,11 +89,12 @@ Status: implemented; final substantive evidence head `9db2e48a16bd8e29e7c45a9d19
 - Implementation surface: `git show 84fd050 --stat` — exactly the 17 files of the authorized surface (module, migration, governance wiring, tests, helpers), +4882/−8; no production file outside the /approvals authority, the governance wiring and the composition root was touched.
 - PR #56 opened from `feat/WORK-008-business-approval` (implementation revision 84fd050 + evidence 622ccec).
 - CI run 33661195741 at final substantive evidence head `9db2e48a16bd8e29e7c45a9d19b17a0432676a1c` — repository-governance PASS, foundation PASS: **799/799 tests, 0 fail, 0 skipped**, including all 96 live-PostgreSQL proofs (84 pre-existing + the 12 WORK-008 live proofs) and the repaired zeck same-key convergence proof.
-- Historical defects (both test-side, root-caused below): CI run 33659722044 at 622ccec — repository-governance PASS, foundation 794/799 (5 approvals live proofs: the async-validator discipline); CI run 33660272203 at db04dc3 — repository-governance PASS, foundation 793/799 (the same 5 on the second validator layer + the pre-existing /zeck same-key live flake).
+- Final merge verification: PR #56 merged as `8eda809c93bed88dc94fcfe46dc3411b2d3900a6`; post-merge CI run `33666912564` passed repository-governance and foundation, including the full behavioral/structural/discrimination/live-PostgreSQL suite.
+- Architect verification: PR #56 was independently reviewed against the frozen architecture lock and WORK-008 scope; formal Architect review was recorded as a COMMENT because the PR author could not self-approve.
 
 ### Defects found and fixed during live verification
 
-The first CI run of the implementation head (run 33659722044, commit 622ccec) passed repository-governance and failed 5 of the 12 WORK-008 live-PostgreSQL proofs (foundation: 799 tests / 794 pass / 5 fail). Root cause: a TEST-defect class, not an implementation defect — the rejection validator helper `expectCode` was an async function; node's `assert.rejects` requires a validation function to return a truthy value SYNCHRONOUSLY (it does not await the validator), so the validation failed with "The validation function is expected to return 'true'" even though every caught error WAS the expected typed ApprovalError (the caught-error line in each failure shows the correct code). The three TRUE-parallel live races (approve/reject arbitration, same-key decide, same-key request creation), the schema-backstop SQL violations, the machine-principal discrimination, and the migration proofs all passed on the first live run.
+The first CI run of the implementation head (run 33659722044, commit 622ccec) passed repository-governance and failed 5 of the 12 WORK-008 live-PostgreSQL proofs (foundation: 799 tests / 794 pass / 5 fail). Root cause: a TEST-defect class, not an implementation defect — the rejection validator helper `expectCode` was an async function; node's `assert.rejects` requires a validation function to return a truthy value SYNCHRONOUSLY (it does not await the validator), so the validation failed with "The validation function is expected to return 'true'" even though the caught error WAS the expected typed ApprovalError. The three TRUE-parallel live races (approve/reject arbitration, same-key decide, same-key request creation), the schema-backstop SQL violations, the machine-principal discrimination, and the migration proofs all passed on the first live run.
 
 A second defect layer surfaced in run 33660272203 (commit db04dc3): the same five proofs still failed because the first fix made the async validator RESOLVE true — still a Promise object at the validation check. The validator is now a synchronous boolean function (the established discipline the /zeck live proofs already use: `(error) => { void expectCode(...); return true; }`).
 
