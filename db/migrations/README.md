@@ -40,13 +40,26 @@ kebab-or-underscore name), applied in ascending order.
   the customer-configuration columns exist only for policy parameter
   values and SLA/approval TIGHTENING, so weakened content has no surface to
   persist through).
+  WORK-011 ships `0007_billing_economics.sql` (the customer service
+  economics: `billing_subscriptions` binding the ACTIVE service-definition
+  version through the composite catalog foreign key with the one-live
+  partial unique index; `billing_usage_records` with the one-row-per-
+  billable-work and one-row-per-outcome dedup indexes — duplicate billable
+  work can never double-charge — plus keyed manual usage; the authoritative
+  `billing_period_ledger` with one unique outcome per (tenant,
+  subscription, period) and the exact-decimal charge arithmetic CHECK; and
+  `billing_cost_references`: NON-AUTHORITATIVE opaque references to
+  external cost statements for margin analysis — the source enumeration
+  is the closed authority domain `ai_authority`, there is no
+  provider/model/token column anywhere, and the AI usage/cost authority
+  stays external).
   Later Work Orders own their own durable tables per the frozen
   architecture's authority boundaries.
 - Migration files create tables only under module-owned prefixes
   (`auth_`, `org_`, `work_`, `policy_`, `workflow_`, `interaction_`,
-  `notification_`, `verticals_`, `services_`, …); extending that allowlist
-  belongs to the Work Order owning the new module's tables (machine-enforced
-  by `checkWorkBoundaries`).
+  `notification_`, `verticals_`, `services_`, `billing_`, …); extending that
+  allowlist belongs to the Work Order owning the new module's tables
+  (machine-enforced by `checkWorkBoundaries`).
 - New customer-domain tables must follow the tenancy discipline established by
   migration 0001: a NOT NULL `tenant_id` referencing `org_service_tenants(id)`,
   enforced by foreign key and read only through a mandatory tenant predicate

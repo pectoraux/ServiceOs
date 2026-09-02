@@ -2640,3 +2640,562 @@ export function buildServiceRuntimeApp(
     services,
   };
 }
+
+// ---------------------------------------------------------------------------
+// In-memory billing store (WORK-011)
+// ---------------------------------------------------------------------------
+
+import {
+  createBillingModule,
+  BillingStoreMissingError,
+  BillingStoreRuleError,
+  computeCostReferenceContentHash,
+  computeCostReferenceRecordHash,
+  computeLedgerContentHash,
+  computeLedgerRecordHash,
+  computeSubscriptionContentHash,
+  computeSubscriptionRecordHash,
+  computeUsageContentHash,
+  computeUsageRecordHash,
+  type ActivateSubscriptionInput,
+  type BillingLedgerRecord,
+  type BillingModule,
+  type BillingStore,
+  type BillingSubscriptionRecord,
+  type CancelSubscriptionInput,
+  type CostReferenceRecord,
+  type RecordCostReferenceStoreInput,
+  type RecordUsageInput,
+  type RegisterSubscriptionStoreInput,
+  type SettlePeriodInput,
+  type SubscriptionPlan,
+  type UsageRecord,
+} from '../../src/modules/billing/index.js';
+
+export interface InMemoryBillingStoreOptions {
+  now?: () => Date;
+  /** Race-injection points before the synchronous critical sections. */
+  beforeRegisterSubscription?: () => Promise<void>;
+  beforeActivateSubscription?: () => Promise<void>;
+  beforeCancelSubscription?: () => Promise<void>;
+  beforeRecordUsage?: () => Promise<void>;
+  beforeSettlePeriod?: () => Promise<void>;
+  beforeRecordCostReference?: () => Promise<void>;
+}
+
+type MutableBillingSubscription = Mutable<BillingSubscriptionRecord>;
+type MutableUsageRecord = Mutable<UsageRecord>;
+type MutableBillingLedger = Mutable<BillingLedgerRecord>;
+type MutableCostReference = Mutable<CostReferenceRecord>;
+
+/**
+ * Faithful in-memory implementation of the /billing store port (NOT a
+ * second persistence authority): tenant predicates, one SYNCHRONOUS
+ * critical section per store operation (the exact semantics of the
+ * advisory-locked SQL transactions — the async race hooks inject
+ * interleaving points BEFORE each section), hash verification on reads
+ * (mutable records so tests can tamper deliberately and prove
+ * detection), forward-only one-live lifecycle with truthful record
+ * hashes, durable dedup identities (work/outcome/key), atomic
+ * settlement (usage marks + ledger row in one critical section) and
+ * the same typed rule/missing errors as the SQL store.
+ */
+export class InMemoryBillingStore implements BillingStore {
+  readonly subscriptions = new Map<string, MutableBillingSubscription>();
+  readonly subscriptionsByIdempotency = new Map<string, string>();
+  readonly usage = new Map<string, MutableUsageRecord>();
+  readonly usageByWork = new Map<string, string>();
+  readonly usageByOutcome = new Map<string, string>();
+  readonly usageByIdempotency = new Map<string, string>();
+  readonly ledger = new Map<string, MutableBillingLedger>();
+  readonly ledgerByPeriod = new Map<string, string>();
+  readonly costReferences = new Map<string, MutableCostReference>();
+  readonly costReferencesByKey = new Map<string, string>();
+  readonly reads = { subscriptionById: 0, subscriptionsList: 0, workUsage: 0, outcomeUsage: 0, usageList: 0, ledger: 0, ledgerList: 0, costReferencesList: 0 };
+  /** Race-injection hooks (public so concurrency tests can swap them). */
+  readonly options: InMemoryBillingStoreOptions;
+  private readonly now: () => Date;
+
+  constructor(options: InMemoryBillingStoreOptions = {}) {
+    this.options = options;
+    this.now = options.now ?? (() => new Date());
+  }
+
+  private verifySubscription(subscription: MutableBillingSubscription): BillingSubscriptionRecord {
+    if (computeSubscriptionContentHash(subscription) !== subscription.contentHash) {
+      throw new BillingStoreRuleError(
+        `subscription ${subscription.id} content no longer matches its recorded content hash`,
+        'subscription-record-tampered',
+      );
+    }
+    if (computeSubscriptionRecordHash(subscription) !== subscription.recordHash) {
+      throw new BillingStoreRuleError(
+        `subscription ${subscription.id} record no longer matches its recorded integrity hash`,
+        'subscription-record-tampered',
+      );
+    }
+    return { ...subscription };
+  }
+
+  private verifyUsage(record: MutableUsageRecord): UsageRecord {
+    if (computeUsageContentHash(record) !== record.contentHash) {
+      throw new BillingStoreRuleError(
+        `usage ${record.id} content no longer matches its recorded content hash`,
+        'usage-record-tampered',
+      );
+    }
+    if (computeUsageRecordHash(record) !== record.recordHash) {
+      throw new BillingStoreRuleError(
+        `usage ${record.id} record no longer matches its recorded integrity hash`,
+        'usage-record-tampered',
+      );
+    }
+    return { ...record };
+  }
+
+  private verifyLedger(entry: MutableBillingLedger): BillingLedgerRecord {
+    if (computeLedgerContentHash(entry) !== entry.contentHash) {
+      throw new BillingStoreRuleError(
+        `ledger entry ${entry.id} content no longer matches its recorded content hash`,
+        'ledger-record-tampered',
+      );
+    }
+    if (computeLedgerRecordHash(entry) !== entry.recordHash) {
+      throw new BillingStoreRuleError(
+        `ledger entry ${entry.id} record no longer matches its recorded integrity hash`,
+        'ledger-record-tampered',
+      );
+    }
+    return { ...entry };
+  }
+
+  private verifyCostReference(reference: MutableCostReference): CostReferenceRecord {
+    if (computeCostReferenceContentHash(reference) !== reference.contentHash) {
+      throw new BillingStoreRuleError(
+        `cost reference ${reference.id} content no longer matches its recorded content hash`,
+        'cost-reference-record-tampered',
+      );
+    }
+    if (computeCostReferenceRecordHash(reference) !== reference.recordHash) {
+      throw new BillingStoreRuleError(
+        `cost reference ${reference.id} record no longer matches its recorded integrity hash`,
+        'cost-reference-record-tampered',
+      );
+    }
+    return { ...reference };
+  }
+
+  private liveSubscriptionOf(tenantId: string, serviceId: string): MutableBillingSubscription | undefined {
+    return [...this.subscriptions.values()].find(
+      (subscription) => subscription.tenantId === tenantId && subscription.serviceId === serviceId && subscription.status !== 'cancelled',
+    );
+  }
+
+  async registerSubscription(input: RegisterSubscriptionStoreInput): Promise<{ subscription: BillingSubscriptionRecord; converged: boolean }> {
+    await this.options.beforeRegisterSubscription?.();
+    // Synchronous critical section (SQL: key lookup + advisory-locked
+    // one-live check + insert).
+    if (input.idempotencyKey !== null) {
+      const existingId = this.subscriptionsByIdempotency.get(`${input.tenantId}:${input.idempotencyKey}`);
+      const existing = existingId !== undefined ? this.subscriptions.get(existingId) : undefined;
+      if (existing !== undefined) {
+        if (existing.contentHash !== input.contentHash) {
+          throw new BillingStoreRuleError(
+            `subscription idempotency key "${input.idempotencyKey}" was already bound to different content`,
+            'idempotency-input-conflict',
+          );
+        }
+        return { subscription: this.verifySubscription(existing), converged: true };
+      }
+    }
+    const live = this.liveSubscriptionOf(input.tenantId, input.serviceId);
+    if (live !== undefined) {
+      if (live.idempotencyKey !== null && live.idempotencyKey === input.idempotencyKey) {
+        return { subscription: this.verifySubscription(live), converged: true };
+      }
+      throw new BillingStoreRuleError(
+        `service ${input.serviceId} already has a live subscription (${live.status}) in this tenant; cancel it before registering a replacement`,
+        'subscription-already-active',
+      );
+    }
+    const id = randomUUID();
+    const subscription: MutableBillingSubscription = {
+      id,
+      tenantId: input.tenantId,
+      serviceId: input.serviceId,
+      serviceVersion: input.serviceVersion,
+      status: 'draft',
+      plan: input.plan,
+      createdBy: input.createdBy,
+      idempotencyKey: input.idempotencyKey,
+      createdAt: input.now,
+      updatedAt: input.now,
+      cancelledAt: null,
+      contentHash: input.contentHash,
+      recordHash: '',
+    };
+    subscription.recordHash = computeSubscriptionRecordHash(subscription);
+    this.subscriptions.set(id, subscription);
+    if (input.idempotencyKey !== null) {
+      this.subscriptionsByIdempotency.set(`${input.tenantId}:${input.idempotencyKey}`, id);
+    }
+    return { subscription: this.verifySubscription(subscription), converged: false };
+  }
+
+  async findSubscription(tenantId: string, subscriptionId: string): Promise<BillingSubscriptionRecord | null> {
+    this.reads.subscriptionById += 1;
+    const subscription = this.subscriptions.get(subscriptionId);
+    if (subscription === undefined || subscription.tenantId !== tenantId) {
+      return null;
+    }
+    return this.verifySubscription(subscription);
+  }
+
+  async listSubscriptions(tenantId: string, serviceId?: string): Promise<BillingSubscriptionRecord[]> {
+    this.reads.subscriptionsList += 1;
+    const matches = [...this.subscriptions.values()].filter(
+      (subscription) =>
+        subscription.tenantId === tenantId && (serviceId === undefined || subscription.serviceId === serviceId),
+    );
+    matches.sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? -1 : 1) : a.createdAt < b.createdAt ? -1 : 1));
+    return matches.map((subscription) => this.verifySubscription(subscription));
+  }
+
+  async findLiveSubscription(tenantId: string, serviceId: string): Promise<BillingSubscriptionRecord | null> {
+    const live = this.liveSubscriptionOf(tenantId, serviceId);
+    return live === undefined ? null : this.verifySubscription(live);
+  }
+
+  async activateSubscription(input: ActivateSubscriptionInput): Promise<{ subscription: BillingSubscriptionRecord; converged: boolean }> {
+    await this.options.beforeActivateSubscription?.();
+    const subscription = this.subscriptions.get(input.subscriptionId);
+    if (subscription === undefined || subscription.tenantId !== input.tenantId) {
+      throw new BillingStoreMissingError('subscription', input.subscriptionId);
+    }
+    if (subscription.status === 'active') {
+      return { subscription: this.verifySubscription(subscription), converged: true };
+    }
+    if (subscription.status === 'cancelled') {
+      throw new BillingStoreRuleError(
+        `subscription ${input.subscriptionId} is cancelled and cannot be re-activated`,
+        'subscription-lifecycle',
+      );
+    }
+    subscription.status = 'active';
+    subscription.updatedAt = input.now;
+    subscription.recordHash = computeSubscriptionRecordHash(subscription);
+    return { subscription: this.verifySubscription(subscription), converged: false };
+  }
+
+  async cancelSubscription(input: CancelSubscriptionInput): Promise<{ subscription: BillingSubscriptionRecord; converged: boolean }> {
+    await this.options.beforeCancelSubscription?.();
+    const subscription = this.subscriptions.get(input.subscriptionId);
+    if (subscription === undefined || subscription.tenantId !== input.tenantId) {
+      throw new BillingStoreMissingError('subscription', input.subscriptionId);
+    }
+    if (subscription.status === 'cancelled') {
+      return { subscription: this.verifySubscription(subscription), converged: true };
+    }
+    subscription.status = 'cancelled';
+    subscription.updatedAt = input.now;
+    subscription.cancelledAt = input.now;
+    subscription.recordHash = computeSubscriptionRecordHash(subscription);
+    return { subscription: this.verifySubscription(subscription), converged: false };
+  }
+
+  async recordUsage(input: RecordUsageInput): Promise<{ usage: UsageRecord; converged: boolean }> {
+    await this.options.beforeRecordUsage?.();
+    // Synchronous critical section (SQL: dedup lookups + insert with
+    // unique-index arbitration + convergence re-read).
+    const refKey =
+      input.source === 'work' && input.workId !== null
+        ? `work:${input.tenantId}:${input.workId}`
+        : input.source === 'outcome' && input.outcomeId !== null
+          ? `outcome:${input.tenantId}:${input.outcomeId}`
+          : undefined;
+    const refId = refKey !== undefined ? this.usageByWork.get(refKey) ?? this.usageByOutcome.get(refKey) : undefined;
+    const refRow = refId !== undefined ? this.usage.get(refId) : undefined;
+    if (refRow !== undefined) {
+      if (refRow.contentHash !== input.contentHash) {
+        throw new BillingStoreRuleError(
+          `work/outcome ${input.workId ?? input.outcomeId} is already metered with different content; duplicate billable work must not double-charge`,
+          'usage-input-conflict',
+        );
+      }
+      return { usage: this.verifyUsage(refRow), converged: true };
+    }
+    if (input.idempotencyKey !== null) {
+      const keyedId = this.usageByIdempotency.get(`${input.tenantId}:${input.idempotencyKey}`);
+      const keyed = keyedId !== undefined ? this.usage.get(keyedId) : undefined;
+      if (keyed !== undefined) {
+        if (keyed.contentHash !== input.contentHash) {
+          throw new BillingStoreRuleError(
+            `usage idempotency key "${input.idempotencyKey}" was already bound to different content`,
+            'idempotency-input-conflict',
+          );
+        }
+        return { usage: this.verifyUsage(keyed), converged: true };
+      }
+    }
+    const id = randomUUID();
+    const record: MutableUsageRecord = {
+      id,
+      tenantId: input.tenantId,
+      subscriptionId: input.subscriptionId,
+      serviceId: input.serviceId,
+      serviceVersion: input.serviceVersion,
+      source: input.source,
+      metric: input.metric,
+      unit: input.unit,
+      quantity: input.quantity,
+      workId: input.workId,
+      outcomeId: input.outcomeId,
+      occurredAt: input.occurredAt,
+      billingPeriod: input.billingPeriod,
+      settledLedgerId: null,
+      createdBy: input.createdBy,
+      idempotencyKey: input.idempotencyKey,
+      createdAt: input.now,
+      updatedAt: input.now,
+      contentHash: input.contentHash,
+      recordHash: '',
+    };
+    record.recordHash = computeUsageRecordHash(record);
+    this.usage.set(id, record);
+    if (input.source === 'work' && input.workId !== null) {
+      this.usageByWork.set(`work:${input.tenantId}:${input.workId}`, id);
+    }
+    if (input.source === 'outcome' && input.outcomeId !== null) {
+      this.usageByOutcome.set(`outcome:${input.tenantId}:${input.outcomeId}`, id);
+    }
+    if (input.idempotencyKey !== null) {
+      this.usageByIdempotency.set(`${input.tenantId}:${input.idempotencyKey}`, id);
+    }
+    return { usage: this.verifyUsage(record), converged: false };
+  }
+
+  async findWorkUsage(tenantId: string, workId: string): Promise<UsageRecord | null> {
+    this.reads.workUsage += 1;
+    const id = this.usageByWork.get(`work:${tenantId}:${workId}`);
+    const record = id !== undefined ? this.usage.get(id) : undefined;
+    return record === undefined ? null : this.verifyUsage(record);
+  }
+
+  async findOutcomeUsage(tenantId: string, outcomeId: string): Promise<UsageRecord | null> {
+    this.reads.outcomeUsage += 1;
+    const id = this.usageByOutcome.get(`outcome:${tenantId}:${outcomeId}`);
+    const record = id !== undefined ? this.usage.get(id) : undefined;
+    return record === undefined ? null : this.verifyUsage(record);
+  }
+
+  async listUsage(tenantId: string, filter?: { subscriptionId?: string; billingPeriod?: string }): Promise<UsageRecord[]> {
+    this.reads.usageList += 1;
+    const matches = [...this.usage.values()].filter(
+      (record) =>
+        record.tenantId === tenantId &&
+        (filter?.subscriptionId === undefined || record.subscriptionId === filter.subscriptionId) &&
+        (filter?.billingPeriod === undefined || record.billingPeriod === filter.billingPeriod),
+    );
+    matches.sort((a, b) => (a.occurredAt === b.occurredAt ? (a.id < b.id ? -1 : 1) : a.occurredAt < b.occurredAt ? -1 : 1));
+    return matches.map((record) => this.verifyUsage(record));
+  }
+
+  async settlePeriod(input: SettlePeriodInput): Promise<{ ledger: BillingLedgerRecord; converged: boolean }> {
+    await this.options.beforeSettlePeriod?.();
+    // Synchronous critical section (SQL: advisory-locked settlement —
+    // ledger convergence check, unsettled usage selection, pricing,
+    // ledger insert + usage settlement marks, all atomic).
+    const periodKey = `${input.tenantId}:${input.subscriptionId}:${input.billingPeriod}`;
+    const existingId = this.ledgerByPeriod.get(periodKey);
+    const existing = existingId !== undefined ? this.ledger.get(existingId) : undefined;
+    if (existing !== undefined) {
+      return { ledger: this.verifyLedger(existing), converged: true };
+    }
+    const subscription = this.subscriptions.get(input.subscriptionId);
+    if (subscription === undefined || subscription.tenantId !== input.tenantId) {
+      throw new BillingStoreMissingError('subscription', input.subscriptionId);
+    }
+    const unsettled = [...this.usage.values()].filter(
+      (record) =>
+        record.tenantId === input.tenantId &&
+        record.subscriptionId === input.subscriptionId &&
+        record.billingPeriod === input.billingPeriod &&
+        record.settledLedgerId === null,
+    );
+    unsettled.sort((a, b) => (a.occurredAt === b.occurredAt ? (a.id < b.id ? -1 : 1) : a.occurredAt < b.occurredAt ? -1 : 1));
+    // Module-owned pure pricing policy (no clock, no IO).
+    const charges = input.priceUsage(unsettled.map((record) => this.verifyUsage(record)));
+    const id = randomUUID();
+    const entry: MutableBillingLedger = {
+      id,
+      tenantId: input.tenantId,
+      subscriptionId: input.subscriptionId,
+      serviceId: input.serviceId,
+      billingPeriod: input.billingPeriod,
+      currency: input.currency,
+      subscriptionCharge: charges.subscriptionCharge,
+      usageCharge: charges.usageCharge,
+      totalCharge: charges.totalCharge,
+      usageCount: unsettled.length,
+      settledAt: input.now,
+      settledBy: input.settledBy,
+      createdBy: input.settledBy,
+      createdAt: input.now,
+      updatedAt: input.now,
+      contentHash: computeLedgerContentHash({
+        tenantId: input.tenantId,
+        subscriptionId: input.subscriptionId,
+        serviceId: input.serviceId,
+        billingPeriod: input.billingPeriod,
+        currency: input.currency,
+        subscriptionCharge: charges.subscriptionCharge,
+        usageCharge: charges.usageCharge,
+        totalCharge: charges.totalCharge,
+        usageCount: unsettled.length,
+        settledBy: input.settledBy,
+      }),
+      recordHash: '',
+    };
+    entry.recordHash = computeLedgerRecordHash(entry);
+    this.ledger.set(id, entry);
+    this.ledgerByPeriod.set(periodKey, id);
+    // Atomic settlement marks with truthful record hashes.
+    for (const record of unsettled) {
+      record.settledLedgerId = id;
+      record.updatedAt = input.now;
+      record.recordHash = computeUsageRecordHash(record);
+    }
+    return { ledger: this.verifyLedger(entry), converged: false };
+  }
+
+  async findLedgerEntry(tenantId: string, subscriptionId: string, billingPeriod: string): Promise<BillingLedgerRecord | null> {
+    this.reads.ledger += 1;
+    const id = this.ledgerByPeriod.get(`${tenantId}:${subscriptionId}:${billingPeriod}`);
+    const entry = id !== undefined ? this.ledger.get(id) : undefined;
+    return entry === undefined ? null : this.verifyLedger(entry);
+  }
+
+  async listLedgerEntries(tenantId: string, billingPeriod?: string): Promise<BillingLedgerRecord[]> {
+    this.reads.ledgerList += 1;
+    const matches = [...this.ledger.values()].filter(
+      (entry) => entry.tenantId === tenantId && (billingPeriod === undefined || entry.billingPeriod === billingPeriod),
+    );
+    matches.sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? -1 : 1) : a.createdAt < b.createdAt ? -1 : 1));
+    return matches.map((entry) => this.verifyLedger(entry));
+  }
+
+  async recordCostReference(input: RecordCostReferenceStoreInput): Promise<{ reference: CostReferenceRecord; converged: boolean }> {
+    await this.options.beforeRecordCostReference?.();
+    // Synchronous critical section (SQL: keyed lookup + insert with
+    // unique arbitration + convergence re-read).
+    const key = `${input.tenantId}:${input.idempotencyKey}`;
+    const existingId = this.costReferencesByKey.get(key);
+    const existing = existingId !== undefined ? this.costReferences.get(existingId) : undefined;
+    if (existing !== undefined) {
+      if (existing.contentHash !== input.contentHash) {
+        throw new BillingStoreRuleError(
+          `cost reference idempotency key "${input.idempotencyKey}" was already bound to different content`,
+          'idempotency-input-conflict',
+        );
+      }
+      return { reference: this.verifyCostReference(existing), converged: true };
+    }
+    const id = randomUUID();
+    const reference: MutableCostReference = {
+      id,
+      tenantId: input.tenantId,
+      billingPeriod: input.billingPeriod,
+      source: input.source,
+      externalReference: input.externalReference,
+      amount: input.amount,
+      currency: input.currency,
+      recordedBy: input.recordedBy,
+      idempotencyKey: input.idempotencyKey,
+      createdAt: input.now,
+      updatedAt: input.now,
+      contentHash: input.contentHash,
+      recordHash: '',
+    };
+    reference.recordHash = computeCostReferenceRecordHash(reference);
+    this.costReferences.set(id, reference);
+    this.costReferencesByKey.set(key, id);
+    return { reference: this.verifyCostReference(reference), converged: false };
+  }
+
+  async listCostReferences(tenantId: string, billingPeriod?: string): Promise<CostReferenceRecord[]> {
+    this.reads.costReferencesList += 1;
+    const matches = [...this.costReferences.values()].filter(
+      (reference) =>
+        reference.tenantId === tenantId && (billingPeriod === undefined || reference.billingPeriod === billingPeriod),
+    );
+    matches.sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? -1 : 1) : a.createdAt < b.createdAt ? -1 : 1));
+    return matches.map((reference) => this.verifyCostReference(reference));
+  }
+}
+
+export interface BillingEconomicsApp {
+  authStore: InMemoryAuthStore;
+  orgStore: InMemoryOrganizationsStore;
+  verticalsStore: InMemoryVerticalsStore;
+  servicesStore: InMemoryServicesStore;
+  workStore: InMemoryWorkStore;
+  billingStore: InMemoryBillingStore;
+  auth: ReturnType<typeof buildIdentityApp>['auth'];
+  organizations: ReturnType<typeof buildIdentityApp>['organizations'];
+  verticals: VerticalsModule;
+  services: ServicesModule;
+  work: ReturnType<typeof createWorkModule>;
+  billing: BillingModule;
+}
+
+/**
+ * One composed in-memory application for the billing economics proofs:
+ * identity/tenancy + the service catalog (verticals + services) + real
+ * work identities + the billing module under test, sharing the single
+ * authorization chain (exactly like the composition root).
+ */
+export function buildBillingEconomicsApp(
+  options: {
+    now?: () => Date;
+    verticalStoreOptions?: InMemoryVerticalsStoreOptions;
+    servicesStoreOptions?: InMemoryServicesStoreOptions;
+    workStoreOptions?: InMemoryWorkStoreOptions;
+    billingStoreOptions?: InMemoryBillingStoreOptions;
+  } = {},
+): BillingEconomicsApp {
+  const now = options.now ?? (() => new Date());
+  const identity = buildIdentityApp({ now });
+  const verticalsStore = new InMemoryVerticalsStore({ now, ...options.verticalStoreOptions });
+  const verticals = createVerticalsModule({ store: verticalsStore, tenancy: identity.organizations, now });
+  const servicesStore = new InMemoryServicesStore({ now, ...options.servicesStoreOptions });
+  const services = createServicesModule({
+    store: servicesStore,
+    tenancy: identity.organizations,
+    verticals,
+    now,
+  });
+  const workStore = new InMemoryWorkStore({ now, ...options.workStoreOptions });
+  const work = createWorkModule({ store: workStore, tenancy: identity.organizations, now });
+  const billingStore = new InMemoryBillingStore({ now, ...options.billingStoreOptions });
+  const billing = createBillingModule({
+    store: billingStore,
+    tenancy: identity.organizations,
+    services,
+    work,
+    now,
+  });
+  return {
+    authStore: identity.authStore,
+    orgStore: identity.orgStore,
+    verticalsStore,
+    servicesStore,
+    workStore,
+    billingStore,
+    auth: identity.auth,
+    organizations: identity.organizations,
+    verticals,
+    services,
+    work,
+    billing,
+  };
+}

@@ -33,6 +33,7 @@ import { createInteractionsModule } from './modules/interactions/index.js';
 import { createNotificationsModule } from './modules/notifications/index.js';
 import { createVerticalsModule } from './modules/verticals/index.js';
 import { createServicesModule } from './modules/services/index.js';
+import { createBillingModule } from './modules/billing/index.js';
 
 import auth from './modules/auth/index.js';
 import organizations from './modules/organizations/index.js';
@@ -173,6 +174,21 @@ export async function main(): Promise<void> {
     verticals: verticalsModule,
   });
 
+  // Billing & service economics authority (/billing, WORK-011): the
+  // customer ledger. It consumes the single authorization chain, the
+  // service catalog through /services' public interface (subscription
+  // binding + pinned-version pricing validation — never a second
+  // definition registry) and /work's public read for metering real work
+  // identities. The AI cost authority stays external: cost data arrives
+  // ONLY as validated non-authoritative references (margin inputs).
+  // No HTTP surface (WORK-012 owns the control-plane API).
+  const billingModule = createBillingModule({
+    executor,
+    tenancy: organizationsModule,
+    services: servicesModule,
+    work: workModule,
+  });
+
   // Notification authority (/notifications, WORK-015): delivery
   // request/status through its owned interface, consuming the interaction
   // boundary's public contract for the external effects (no second
@@ -218,6 +234,7 @@ export async function main(): Promise<void> {
     notificationsAuthority: notificationsModule !== null ? 'composed' : 'missing',
     verticalsAuthority: verticalsModule !== null ? 'composed' : 'missing',
     servicesAuthority: servicesModule !== null ? 'composed' : 'missing',
+    billingAuthority: billingModule !== null ? 'composed' : 'missing',
     registeredAdapterCapabilities: adapterRegistry.describe().length,
   });
 }
