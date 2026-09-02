@@ -12,25 +12,12 @@
     "WORK-013"
   ],
   "parallelWaves": [
-    [
-      "WORK-011"
-    ],
-    [
-      "WORK-005",
-      "WORK-007",
-      "WORK-008"
-    ],
-    [
-      "WORK-006"
-    ],
-    [
-      "WORK-010",
-      "WORK-012"
-    ],
-    [
-      "WORK-013"
-    ]
+    ["WORK-011"],
+    ["WORK-005","WORK-007","WORK-008"],
+    ["WORK-006"],
+    ["WORK-010","WORK-012"],
+    ["WORK-013"]
   ],
   "selectionRule": "Only dependency-eligible Work Orders with no uncoordinated protected-surface conflict may be activated.",
-  "rationale": "WORK-001, WORK-002, WORK-003, WORK-014, WORK-004 and WORK-015 are complete, so they are removed from the future generation. This file is the future-only roadmap: it covers exactly the future generation of dependency-state.json. Parallel waves describe eligibility only; Architect activation is still required. CI validates this future-only roadmap against the evolving Work Order lifecycle. (WORK-009 activation reconciliation: dependency-state/frontier/checkpoint/program-state moved WORK-009 into the current in-flight generation from main revision d0e223b9a6d8bc5069836b2fd2be9871dd97007b; this roadmap was updated on the WORK-009 worker branch because the activation-time write was skipped, exactly like the WORK-004 activation reconciliation on feat/WORK-004-business-workflow at 48ae6ef.)"
+  "rationale": "WORK-001, WORK-002, WORK-003, WORK-014, WORK-004, WORK-015 and WORK-009 are complete, so they are removed from the future generation. This file is the future-only roadmap: it covers exactly the future generation of dependency-state.json. Parallel waves describe eligibility only; Architect activation is still required. WORK-009 is complete on main at merge commit 34d955320a998aae1544b6dc7423801fd1de1557 after Architect verification of static, dynamic, discrimination and concurrency evidence."
 }
