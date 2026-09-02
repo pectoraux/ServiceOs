@@ -13,14 +13,13 @@ import { spawnSync } from 'node:child_process';
 import { resolve, join } from 'node:path';
 import { readFileSync } from 'node:fs';
 
-/** The live Work Order id and branch from canonical state (era-relative). */
-function liveFrontier(): { id: string; branch: string } {
+/** The live Work Order, when the canonical repository is in implementation era. */
+function liveFrontier(): { id: string; branch: string } | null {
   const program = JSON.parse(
     readFileSync(join(process.cwd(), 'spec/development-state/program-state.json'), 'utf8'),
   ) as { workOrders: { id: string; status: string; branch: string }[] };
   const live = program.workOrders.find((entry) => entry.status === 'in_flight');
-  assert.ok(live, 'expected an in-flight Work Order in canonical state');
-  return { id: live.id, branch: live.branch };
+  return live ? { id: live.id, branch: live.branch } : null;
 }
 
 function runCheckCli(env: Record<string, string>): { status: number | null; stdout: string; stderr: string } {
@@ -33,7 +32,6 @@ function runCheckCli(env: Record<string, string>): { status: number | null; stdo
 }
 
 test('check CLI exits 0 on the real repository with a clean environment', () => {
-  const { id, branch } = liveFrontier();
   const result = runCheckCli({
     PATH: process.env.PATH ?? '',
     HOME: process.env.HOME ?? '',
@@ -44,35 +42,52 @@ test('check CLI exits 0 on the real repository with a clean environment', () => 
     `expected exit 0\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
   );
   assert.match(result.stdout, /PASS: ServiceOS build, architecture, configuration and governance checks/);
-  assert.match(result.stdout, new RegExp(`currentLiveImplementation=${id}`));
-  assert.match(result.stdout, new RegExp(branch.replaceAll('/', '\\/')));
+
+  const live = liveFrontier();
+  if (live) {
+    assert.match(result.stdout, new RegExp(`currentLiveImplementation=${live.id}`));
+    assert.match(result.stdout, new RegExp(live.branch.replaceAll('/', '\\/')));
+  } else {
+    assert.match(result.stdout, /no Work Order in flight/);
+  }
   assert.match(result.stdout, /identity\/tenancy: single authorization chain/);
 });
 
-test('check CLI exits 0 when EXPECT_BRANCH matches the in-flight Work Order branch', () => {
-  const result = runCheckCli({
+test('check CLI exits 0 when EXPECT_BRANCH matches the in-flight Work Order branch, or when finalized with no in-flight Work Order', () => {
+  const live = liveFrontier();
+  const env: Record<string, string> = {
     PATH: process.env.PATH ?? '',
     HOME: process.env.HOME ?? '',
-    EXPECT_BRANCH: liveFrontier().branch,
-  });
+  };
+  if (live) env.EXPECT_BRANCH = live.branch;
+
+  const result = runCheckCli(env);
   assert.equal(result.status, 0, result.stderr);
+  if (!live) assert.match(result.stdout, /no Work Order in flight/);
 });
 
-test('check CLI fails closed when EXPECT_BRANCH contradicts the in-flight branch', () => {
+test('check CLI fails closed when EXPECT_BRANCH contradicts the in-flight branch, while finalized state remains valid without an in-flight Work Order', () => {
+  const live = liveFrontier();
   const result = runCheckCli({
     PATH: process.env.PATH ?? '',
     HOME: process.env.HOME ?? '',
     EXPECT_BRANCH: 'feat/some-other-branch',
   });
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /does not match the in-flight Work Order branch/);
+
+  if (live) {
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /does not match the in-flight Work Order branch/);
+  } else {
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /no Work Order in flight/);
+  }
 });
 
 test('check CLI fails closed on unknown SERVICEOS_* variables (typo guard)', () => {
   const result = runCheckCli({
     PATH: process.env.PATH ?? '',
     HOME: process.env.HOME ?? '',
-    SERVICEOS_EXPECT_BRANCH: liveFrontier().branch,
+    SERVICEOS_EXPECT_BRANCH: 'feat/unused',
   });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /unknown environment variable SERVICEOS_EXPECT_BRANCH/);
