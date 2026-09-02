@@ -326,11 +326,14 @@ test('schema backstops: one-live, dedup, one-outcome, keyed references, closed e
       ),
       /cost_reference|check|source/i,
     );
-    // The subscription must pin a REGISTERED definition version (FK).
+    // The subscription must pin a REGISTERED definition version (FK). Use
+    // a service with NO subscription so the one-live index does not fire
+    // first (PostgreSQL evaluates the partial unique insert conflict
+    // before the FK for an occupied (tenant, service) slot).
     await assert.rejects(
       app.pool.query(
         `INSERT INTO billing_subscriptions (tenant_id, service_id, service_version, status, plan, content_hash, record_hash, created_by, created_at, updated_at)
-         VALUES ($1, 'subcontractor-compliance', 99, 'draft', '{}', 'x', 'x', $2, NOW(), NOW())`,
+         VALUES ($1, 'ghost-service', 1, 'draft', '{}', 'x', 'x', $2, NOW(), NOW())`,
         [app.tenantId, app.owner.id],
       ),
       /services_definitions|foreign key/i,
@@ -414,12 +417,14 @@ test('duplicate billable work cannot double-charge over real SQL', { skip: SKIP 
     await cataloged(app);
     await activeSubscription(app);
     const work = await createWork(app, 'Onboard Acme');
+    const occurredAt = new Date('2026-09-10T10:00:00.000Z');
     const first = await app.billing.meterWorkUsage(app.owner, {
       tenantId: app.tenantId,
       serviceId: 'subcontractor-compliance',
       workId: work.id,
       metric: 'onboarded-subcontractor',
       quantity: '1',
+      occurredAt,
     });
     const second = await app.billing.meterWorkUsage(app.owner, {
       tenantId: app.tenantId,
@@ -427,8 +432,9 @@ test('duplicate billable work cannot double-charge over real SQL', { skip: SKIP 
       workId: work.id,
       metric: 'onboarded-subcontractor',
       quantity: '1',
+      occurredAt,
     });
-    assert.equal(second.converged, true, 'duplicate metering converges');
+    assert.equal(second.converged, true, 'duplicate metering of the SAME billable event converges');
     assert.equal(second.usage.id, first.usage.id);
     const rows = await app.pool.query(
       `SELECT COUNT(*)::int AS n FROM billing_usage_records WHERE tenant_id = $1`,
@@ -517,8 +523,9 @@ test('after-the-fact mutation of stored rows is detected on read (live)', { skip
         return true;
       },
     );
-    // Ledger charge tamper.
-    await app.pool.query(`UPDATE billing_period_ledger SET total_charge = 9999 WHERE tenant_id = $1`, [app.tenantId]);
+    // Ledger charge tamper (usage_charge: hash-covered; total_charge is
+    // schema-invariant arithmetic and cannot be tampered at all).
+    await app.pool.query(`UPDATE billing_period_ledger SET usage_charge = 9999 WHERE tenant_id = $1`, [app.tenantId]);
     await assert.rejects(
       app.billing.listLedgerEntries(app.owner, app.tenantId, PERIOD),
       (error: unknown) => {
@@ -598,8 +605,15 @@ test('TRUE parallel actors converge over real SQL (independent pooled clients)',
       if (failed[0]?.status === 'rejected') {
         await expectCode(failed[0].reason, 'IDEMPOTENCY_INPUT_CONFLICT');
       }
+      // Cancel the divergent winner: the one-live invariant would
+      // otherwise block the next registration.
+      const divergentWinner = [divA, divB].find((result) => result.status === 'fulfilled');
+      if (divergentWinner?.status === 'fulfilled') {
+        await app.billing.cancelSubscription(app.owner, app.tenantId, divergentWinner.value.subscription.id);
+      }
 
-      // Parallel metering of the SAME billable work converges on ONE row.
+      // Parallel metering of the SAME billable work converges on ONE row
+      // (the SAME billable event: explicit occurredAt, quantity).
       const subscription = await app.billing.registerSubscription(app.owner, {
         tenantId: app.tenantId,
         serviceId: 'subcontractor-compliance',
@@ -612,6 +626,7 @@ test('TRUE parallel actors converge over real SQL (independent pooled clients)',
         workType: 'OnboardSubcontractor',
         title: 'Onboard Acme',
       });
+      const meterOccurredAt = new Date('2026-09-12T08:00:00.000Z');
       const [meterA, meterB] = await Promise.all([
         billingA.meterWorkUsage(colleagueA, {
           tenantId: app.tenantId,
@@ -619,6 +634,7 @@ test('TRUE parallel actors converge over real SQL (independent pooled clients)',
           workId: work.work.id,
           metric: 'onboarded-subcontractor',
           quantity: '3',
+          occurredAt: meterOccurredAt,
         }),
         app.billing.meterWorkUsage(app.owner, {
           tenantId: app.tenantId,
@@ -626,6 +642,7 @@ test('TRUE parallel actors converge over real SQL (independent pooled clients)',
           workId: work.work.id,
           metric: 'onboarded-subcontractor',
           quantity: '3',
+          occurredAt: meterOccurredAt,
         }),
       ]);
       assert.notEqual(meterA.converged, meterB.converged, 'exactly one insert and one convergence');
