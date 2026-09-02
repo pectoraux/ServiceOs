@@ -12,7 +12,7 @@ IN_FLIGHT
 
 Activated by the Architect on 2026-09-02.
 
-- Activation issue: #34
+- Activation issue: #33
 - Implementation branch: `feat/WORK-011-billing-economics`
 - Activation baseline: `70c07665809fc973b834126857ece9262fc74d1c`
 - Assurance profile: `HIGH_ASSURANCE`
