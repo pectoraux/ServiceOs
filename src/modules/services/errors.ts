@@ -1,0 +1,47 @@
+/**
+ * ServiceOS /services typed error surface (WORK-009, module internal —
+ * exported through the module's public interface).
+ */
+export type ServiceErrorCode =
+  | 'INVALID_INPUT'
+  | 'TENANT_NOT_FOUND'
+  | 'TENANT_SUSPENDED'
+  | 'ORGANIZATION_SUSPENDED'
+  | 'TENANT_FORBIDDEN'
+  | 'ROLE_FORBIDDEN'
+  | 'SERVICE_NOT_FOUND'
+  | 'CONFIGURATION_NOT_FOUND'
+  | 'VERTICAL_PACKAGE_NOT_FOUND'
+  | 'VERSION_CONTENT_CONFLICT'
+  | 'VERSION_NOT_SEQUENTIAL'
+  | 'VERSION_RETIRED'
+  | 'SERVICE_RECORD_TAMPERED'
+  | 'CONFIGURATION_RECORD_TAMPERED'
+  | 'IDEMPOTENCY_INPUT_CONFLICT'
+  | 'CONFIGURATION_INPUT_CONFLICT'
+  | 'WORKFLOW_STATE_UNKNOWN'
+  | 'TRANSITION_ILLEGAL'
+  | 'WORK_TYPE_UNKNOWN'
+  | 'ENTITY_UNKNOWN'
+  | 'WORKFLOW_STEP_UNKNOWN'
+  | 'POLICY_KEY_UNKNOWN'
+  | 'POLICY_PARAMETER_UNKNOWN'
+  | 'POLICY_RULES_FORBIDDEN'
+  | 'EVIDENCE_UNKNOWN'
+  | 'APPROVAL_RULE_UNKNOWN'
+  | 'CAPABILITY_NOT_DECLARED'
+  | 'AI_SELECTION_FORBIDDEN'
+  | 'AI_VERIFICATION_FORBIDDEN'
+  | 'SLA_WEAKENED'
+  | 'APPROVAL_WEAKENED'
+  | 'POLICY_PARAMETER_OUT_OF_BOUNDS';
+
+export class ServicesError extends Error {
+  constructor(
+    readonly code: ServiceErrorCode,
+    message?: string,
+  ) {
+    super(message ?? code);
+    this.name = 'ServicesError';
+  }
+}

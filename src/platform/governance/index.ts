@@ -55,6 +55,17 @@ export {
   type WorkflowBoundaryCheckOptions,
 } from './workflow-boundary-checks.js';
 export {
+  checkServiceVerticalBoundaries,
+  RESERVED_VERTICAL_AUTHORITY_EXPORTS,
+  RESERVED_SERVICE_AUTHORITY_EXPORTS,
+  RESERVED_AI_SERVICE_RUNTIME_EXPORTS,
+  VERTICALS_ALLOWED_IMPORTS,
+  SERVICES_ALLOWED_IMPORTS,
+  VERTICALS_IMPORTERS,
+  SERVICES_IMPORTERS,
+  type ServiceVerticalBoundaryCheckOptions,
+} from './service-vertical-boundary-checks.js';
+export {
   checkExternalInteractionBoundaries,
   RESERVED_INTERACTION_AUTHORITY_EXPORTS,
   RESERVED_ADAPTER_AUTHORITY_EXPORTS,

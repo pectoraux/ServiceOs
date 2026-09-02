@@ -31,6 +31,8 @@ import { createWorkflowModule } from './modules/workflow/index.js';
 import { createAdapterRegistry, createEffectSink } from './modules/integrations/index.js';
 import { createInteractionsModule } from './modules/interactions/index.js';
 import { createNotificationsModule } from './modules/notifications/index.js';
+import { createVerticalsModule } from './modules/verticals/index.js';
+import { createServicesModule } from './modules/services/index.js';
 
 import auth from './modules/auth/index.js';
 import organizations from './modules/organizations/index.js';
@@ -148,6 +150,29 @@ export async function main(): Promise<void> {
     sink: effectSink,
   });
 
+  // Vertical-package registration authority (/verticals, WORK-009): the
+  // tenant-bound, versioned domain catalog. It consumes the single
+  // authorization chain from /organizations' public interface exactly like
+  // /work, /policies, /workflow and imports no other business authority
+  // (checked structurally): packages are declarative data — vertical
+  // workflow logic cannot leak into horizontal authorities by construction.
+  // No HTTP surface (WORK-012 owns the control-plane API).
+  const verticalsModule = createVerticalsModule({ executor, tenancy: organizationsModule });
+
+  // Service-definition authority (/services, WORK-009): the binding layer.
+  // It consumes the single authorization chain, /verticals' public package
+  // registry (registration pinning + declaration cross-validation, never a
+  // second registry) and /workflow's frozen canonical machine (every
+  // workflow-definition binding is validated against legal transitions —
+  // service data can never weaken the horizontal lifecycle authority).
+  // Customer configurations are validated weakening-free before
+  // persistence (AC-3). No HTTP surface (WORK-012).
+  const servicesModule = createServicesModule({
+    executor,
+    tenancy: organizationsModule,
+    verticals: verticalsModule,
+  });
+
   // Notification authority (/notifications, WORK-015): delivery
   // request/status through its owned interface, consuming the interaction
   // boundary's public contract for the external effects (no second
@@ -191,6 +216,8 @@ export async function main(): Promise<void> {
     workflowAuthority: workflowModule !== null ? 'composed' : 'missing',
     interactionsAuthority: interactionsModule !== null ? 'composed' : 'missing',
     notificationsAuthority: notificationsModule !== null ? 'composed' : 'missing',
+    verticalsAuthority: verticalsModule !== null ? 'composed' : 'missing',
+    servicesAuthority: servicesModule !== null ? 'composed' : 'missing',
     registeredAdapterCapabilities: adapterRegistry.describe().length,
   });
 }
