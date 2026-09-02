@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "status": "approved",
-  "sequence": ["WORK-005","WORK-007","WORK-008","WORK-006","WORK-010","WORK-012","WORK-013"],
-  "parallelWaves": [["WORK-005","WORK-007","WORK-008"],["WORK-006"],["WORK-010","WORK-012"],["WORK-013"]],
+  "sequence": ["WORK-006","WORK-010","WORK-012","WORK-013"],
+  "parallelWaves": [["WORK-006"],["WORK-010","WORK-012"],["WORK-013"]],
   "selectionRule": "Only dependency-eligible Work Orders with no uncoordinated protected-surface conflict may be activated.",
-  "rationale": "This is the future-only roadmap. WORK-001, WORK-002, WORK-003, WORK-014, WORK-004, WORK-015 and WORK-009 are complete; WORK-011 is now the active Work Order and is removed from the future generation. Parallel waves describe eligibility only; Architect activation is still required."
+  "rationale": "This is the future-only roadmap. WORK-001, WORK-002, WORK-003, WORK-014, WORK-004, WORK-015, WORK-009 and WORK-011 are complete; WORK-005, WORK-007 and WORK-008 are the current active parallel wave and are removed from the future generation. Parallel waves describe eligibility only; Architect activation is still required."
 }
