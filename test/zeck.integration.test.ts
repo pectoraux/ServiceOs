@@ -398,7 +398,14 @@ test('TRUE parallel actors converge over real SQL (independent pooled clients)',
   const authB = createAuthModule({ executor: executorB });
   const organizationsB = createOrganizationsModule({ executor: executorB, authenticator: authB.authenticate, identity: authB });
   const workB = createWorkModule({ executor: executorB, tenancy: organizationsB });
-  const gatewayB = createInMemoryZeckGateway();
+  // DISTINCT execution-reference namespace: this double's ids land in
+  // the SAME tenant tables as the app's gateway ids. Without the
+  // prefix, a fresh double's counter restarts at 1 and its attach can
+  // collide with an already-pinned reference of the OTHER gateway (the
+  // CI live-verification defect class: which racer wins a section
+  // decides whether the namespaces collide). The prefix makes every
+  // gateway's references globally unique in the test database.
+  const gatewayB = createInMemoryZeckGateway({ executionPrefix: 'zeck-exec-actor-b' });
   const zeckB = createZeckModule({ executor: executorB, tenancy: organizationsB, work: workB, gateway: gatewayB, now: () => new Date('2026-09-02T12:00:00.000Z') });
   try {
     // Same-key submissions: one durable intent, ONE execution reference,
@@ -435,7 +442,11 @@ test('TRUE parallel actors converge over real SQL (independent pooled clients)',
       zeckB.submitExecutionIntent(app.colleague, divB),
     ]);
     const failed = [div1, div2].filter((result) => result.status === 'rejected');
-    assert.equal(failed.length, 1, 'exactly one rejection');
+    assert.equal(
+      failed.length,
+      1,
+      `exactly one rejection (got ${failed.length}: ${failed.map((result) => String((result as PromiseRejectedResult).reason)).join(' | ')})`,
+    );
     if (failed[0]?.status === 'rejected') {
       await expectCode(failed[0].reason, 'IDEMPOTENCY_INPUT_CONFLICT');
     }
@@ -464,7 +475,7 @@ test('TRUE parallel actors converge over real SQL (independent pooled clients)',
     // A MISBEHAVING gateway (divergent acceptances for one intent):
     // exactly one REFERENCE_CONFLICT — the boundary does not blindly
     // trust foreign idempotency. Fresh work + attempt + key.
-    const misbehaving = createInMemoryZeckGateway({ divergentAcceptances: true });
+    const misbehaving = createInMemoryZeckGateway({ divergentAcceptances: true, executionPrefix: 'zeck-exec-mis' });
     const zeckMis = createZeckModule({
       executor: executorB,
       tenancy: organizationsB,
