@@ -22,13 +22,12 @@ import {
 const REPO_ROOT = resolve(process.cwd());
 
 /** The currently in-flight Work Order, resolved from canonical state (era-relative). */
-function liveWorkOrderId(): string {
+function liveWorkOrderId(): string | null {
   const program = JSON.parse(readFileSyncText(join(REPO_ROOT, 'spec/development-state/program-state.json')));
   const live = (program.workOrders as { id: string; status: string }[]).find(
     (entry) => entry.status === 'in_flight',
   );
-  assert.ok(live, 'expected exactly one in-flight Work Order in canonical state');
-  return live.id;
+  return live?.id ?? null;
 }
 
 function assertGovernanceError(block: () => unknown, code: string): void {
@@ -42,31 +41,58 @@ function assertGovernanceError(block: () => unknown, code: string): void {
   );
 }
 
-test('reads the real repository state: the activated Work Order is in flight on the recorded branch', () => {
+test('reads the real repository state in either implementation or finalized era', () => {
   const status = readProgramState(REPO_ROOT);
   assert.equal(status.architectureVersion, 'v1.0');
-  const liveId = liveWorkOrderId();
-  assert.ok(status.frontier.currentLiveImplementation);
-  assert.equal(status.frontier.currentLiveImplementation, liveId);
-  assert.deepEqual(status.frontier.inFlight, [liveId]);
 
-  const live = currentLiveWorkOrder(status);
-  assert.ok(live);
-  assert.equal(live.id, liveId);
-  assert.equal(live.status, 'in_flight');
-  assert.equal(typeof live.branch, 'string');
-  assert.match(live.branch as string, /^feat\//);
-  assert.ok(['CRITICAL', 'HIGH_ASSURANCE', 'STANDARD', 'LIGHT'].includes(live.assuranceProfile ?? ''));
+  const liveId = liveWorkOrderId();
+  if (liveId) {
+    assert.ok(status.frontier.currentLiveImplementation);
+    assert.equal(status.frontier.currentLiveImplementation, liveId);
+    assert.deepEqual(status.frontier.inFlight, [liveId]);
+
+    const live = currentLiveWorkOrder(status);
+    assert.ok(live);
+    assert.equal(live.id, liveId);
+    assert.equal(live.status, 'in_flight');
+    assert.equal(typeof live.branch, 'string');
+    assert.match(live.branch as string, /^feat\//);
+    assert.ok(['CRITICAL', 'HIGH_ASSURANCE', 'STANDARD', 'LIGHT'].includes(live.assuranceProfile ?? ''));
+  } else {
+    assert.equal(status.frontier.currentLiveImplementation, null);
+    assert.deepEqual(status.frontier.inFlight, []);
+    assert.equal(currentLiveWorkOrder(status), null);
+  }
 });
 
 test('reads the real Work Order status line', () => {
-  assert.equal(readWorkOrderStatus(join(REPO_ROOT, `spec/work-orders/${liveWorkOrderId()}.md`)), 'in_flight');
+  // WORK-007 is a stable completed Work Order after canonical finalization.
+  assert.equal(readWorkOrderStatus(join(REPO_ROOT, 'spec/work-orders/WORK-007.md')), 'complete');
 });
 
 interface FixtureOptions {
   programState?: (base: any) => any;
   frontierState?: (base: any) => any;
   workOrderStatus?: string;
+}
+
+/** Ensure fixtures that exercise in-flight invariants have an explicit synthetic live record. */
+function ensureInFlightFixture(program: any, frontier: any): string {
+  const existing = (program.workOrders as { id: string; status: string }[]).find(
+    (entry) => entry.status === 'in_flight',
+  );
+  if (existing) return existing.id;
+
+  const syntheticId = 'WORK-007';
+  const synthetic = (program.workOrders as any[]).find((entry) => entry.id === syntheticId);
+  assert.ok(synthetic, 'fixture base must contain WORK-007');
+  synthetic.status = 'in_flight';
+  synthetic.branch = synthetic.branch ?? 'feat/WORK-007-business-evidence';
+  synthetic.currentMainRevision = synthetic.currentMainRevision ?? frontier.currentMain;
+  frontier.inFlight = [syntheticId];
+  frontier.currentLiveImplementation = syntheticId;
+  frontier.plannedNext = [];
+  return syntheticId;
 }
 
 /** Mutate the in-flight record of a program-state copy (era-relative). */
@@ -78,7 +104,7 @@ function mutateLiveRecord(program: any, mutate: (live: any) => void): any {
 }
 
 /** Materialize a mutated copy of the real governance state in a temp repo. */
-function fixtureState(options: FixtureOptions = {}): { root: string; cleanup: () => void } {
+function fixtureState(options: FixtureOptions = {}): { root: string; cleanup: () => void; liveId: string } {
   const root = mkdtempSync(join(tmpdir(), 'serviceos-gov-'));
   mkdirSync(join(root, 'spec/development-state'), { recursive: true });
   mkdirSync(join(root, 'spec/work-orders'), { recursive: true });
@@ -89,30 +115,37 @@ function fixtureState(options: FixtureOptions = {}): { root: string; cleanup: ()
   const frontier = JSON.parse(
     readFileSyncText(join(REPO_ROOT, 'spec/development-state/frontier-state.json')),
   );
-  // The reader cross-checks EVERY work-order file, so the fixture copies
-  // every work order file from canonical state.
+  // Tests exercising in-flight mutations use an explicit synthetic in-flight
+  // record when canonical state is finalized. This keeps test fixtures
+  // independent of the repository's current lifecycle era.
+  const liveId = ensureInFlightFixture(program, frontier);
+
   const workOrderFiles = readdirSync(join(REPO_ROOT, 'spec/work-orders')).filter((name) =>
     /^WORK-\d+\.md$/.test(name),
   );
-  const liveId = liveWorkOrderId();
+
+  const configuredProgram = options.programState ? options.programState(program) : program;
+  const configuredFrontier = options.frontierState ? options.frontierState(frontier) : frontier;
 
   writeFileSync(
     join(root, 'spec/development-state/program-state.json'),
-    JSON.stringify(options.programState ? options.programState(program) : program, null, 2),
+    JSON.stringify(configuredProgram, null, 2),
   );
   writeFileSync(
     join(root, 'spec/development-state/frontier-state.json'),
-    JSON.stringify(options.frontierState ? options.frontierState(frontier) : frontier, null, 2),
+    JSON.stringify(configuredFrontier, null, 2),
   );
   for (const fileName of workOrderFiles) {
     const text = readFileSyncText(join(REPO_ROOT, 'spec/work-orders', fileName));
     const mutated =
       options.workOrderStatus !== undefined && fileName === `${liveId}.md`
-        ? text.replace('Status: in_flight', `Status: ${options.workOrderStatus}`)
-        : text;
+        ? text.replace(/^Status:\s*\w+\s*$/m, `Status: ${options.workOrderStatus}`)
+        : fileName === `${liveId}.md`
+          ? text.replace(/^Status:\s*\w+\s*$/m, 'Status: in_flight')
+          : text;
     writeFileSync(join(root, 'spec/work-orders', fileName), mutated);
   }
-  return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  return { root, cleanup: () => rmSync(root, { recursive: true, force: true }), liveId };
 }
 
 function readFileSyncText(path: string): string {
@@ -120,10 +153,10 @@ function readFileSyncText(path: string): string {
 }
 
 test('consistent fixture copy passes (control)', () => {
-  const { root, cleanup } = fixtureState();
+  const { root, cleanup, liveId } = fixtureState();
   try {
     const status = readProgramState(root);
-    assert.equal(status.frontier.currentLiveImplementation, liveWorkOrderId());
+    assert.equal(status.frontier.currentLiveImplementation, liveId);
   } finally {
     cleanup();
   }
@@ -169,10 +202,6 @@ test('frontier/program in-flight set mismatch fails closed', () => {
 test('currentLiveImplementation outside the in-flight set fails closed', () => {
   const { root, cleanup } = fixtureState({
     frontierState: (frontier: any) => {
-      // Era-independent: a synthetic id that can never be in the in-flight
-      // set (the fixture's original hard-coded future id became the live
-      // Work Order when that Work Order activated, making the mutation a
-      // no-op).
       frontier.currentLiveImplementation = 'WORK-999';
       return frontier;
     },
@@ -235,7 +264,9 @@ test('duplicate Work Order records fail closed', () => {
 test('currentLiveWorkOrder returns null when nothing is in flight', () => {
   const { root, cleanup } = fixtureState({
     programState: (program: any) => {
-      program.workOrders = [];
+      // Keep every Work Order present so the reader can still cross-check
+      // the fixture, but finalize the fixture era by marking all records complete.
+      for (const workOrder of program.workOrders as any[]) workOrder.status = 'complete';
       return program;
     },
     frontierState: (frontier: any) => {
@@ -251,4 +282,3 @@ test('currentLiveWorkOrder returns null when nothing is in flight', () => {
     cleanup();
   }
 });
-
