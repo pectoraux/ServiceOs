@@ -68,7 +68,7 @@ See TEMPLATE.md.
 
 ## Evidence
 
-Status: implemented; CI green at head `432399a` on PR #52 (Architect verification/merge pending).
+Status: implemented; CI green at final evidence head `2ec047a` (2ec047a242aeee747ea9e35fd4952765a04cde88) on PR #52, run `33598399215` (Architect verification substantively satisfied per the review of `2ec047a`; merge pending this evidence-record correction and its CI rerun — see "Evidence-record correction" below).
 
 ### What was implemented
 
@@ -100,7 +100,12 @@ A second run (33597467909) then failed one ZECK-era live proof (the parallel div
 - `npm run check` (build + config + architecture structural checks incl. the new evidence boundary checks + governance state + `scripts/governance-check.py`) — PASS.
 - `npm test` locally — 742 tests / 658 pass / 0 fail / 84 skipped (the 84 live-PostgreSQL proofs execute in CI only; no local PostgreSQL in the implementation environment).
 - Composition-root smoke — truthful startup (`evidenceAuthority: composed`, 16 modules, exit 0 on SIGTERM).
-- CI run 33598190423 at head `432399a` — repository-governance PASS, foundation PASS: **742/742 tests, 0 fail, 0 skipped**, including all 84 live-PostgreSQL proofs and all 9 WORK-007 live proofs.
+- CI run 33598399215 at final evidence head `2ec047a` (2ec047a242aeee747ea9e35fd4952765a04cde88) — repository-governance PASS, foundation PASS: **742/742 tests, 0 fail, 0 skipped**, including all 84 live-PostgreSQL proofs and all 9 WORK-007 live proofs (foundation job log: `# tests 742 / # pass 742 / # fail 0 / # skipped 0`).
+- Historical, superseded as verification evidence by the final head/run above: CI run 33598190423 at head `432399a` — both jobs PASS with the identical 742/742 result; this was the implementation head immediately before the evidence-recording commit `2ec047a` and the convergence point of the defect history above. The earlier failed runs (33596641918 at `a0a714a`, 33597467909 at `7bc40f1`) remain recorded above as historical defects.
+
+### Evidence-record correction
+
+The Architect review of `2ec047a` (PR #52) found this Evidence section still pointing its verification evidence at the pre-evidence head `432399a` / run `33598190423`, while the actual final PR evidence head/run was `2ec047a` / `33598399215`. The Status and Verification results pointers were corrected accordingly in this commit; the failed-run history above is preserved unchanged as historical defects, per the review's requirement. The correction is evidence-record consistency only — no architecture, implementation, schema, or test change — and its own CI rerun is the merge gate required by that review.
 
 ### Known limitations
 
