@@ -523,9 +523,13 @@ test('after-the-fact mutation of stored rows is detected on read (live)', { skip
         return true;
       },
     );
-    // Ledger charge tamper (usage_charge: hash-covered; total_charge is
-    // schema-invariant arithmetic and cannot be tampered at all).
-    await app.pool.query(`UPDATE billing_period_ledger SET usage_charge = 9999 WHERE tenant_id = $1`, [app.tenantId]);
+    // Ledger tamper: the charge columns are ALL schema-invariant (the
+    // arithmetic CHECK protects every one of them — the schema itself is
+    // a tamper backstop). The read-side detection proof therefore mutates
+    // a SCHEMA-LEGAL, hash-covered column (currency): the CHECK passes,
+    // the content hash diverges — the exact live equivalent of the
+    // in-env tamper seam.
+    await app.pool.query(`UPDATE billing_period_ledger SET currency = 'USD' WHERE tenant_id = $1`, [app.tenantId]);
     await assert.rejects(
       app.billing.listLedgerEntries(app.owner, app.tenantId, PERIOD),
       (error: unknown) => {
