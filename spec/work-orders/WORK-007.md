@@ -1,6 +1,6 @@
 # WORK-007
 
-Status: in_flight
+Status: planned
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: CRITICAL
