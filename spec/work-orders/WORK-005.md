@@ -1,6 +1,6 @@
 # WORK-005
 
-Status: in_flight
+Status: complete
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: CRITICAL
@@ -74,7 +74,7 @@ See TEMPLATE.md.
 
 ## Evidence
 
-Status: implemented; awaiting Architect verification.
+Status: verified and approved by Architect; merged in PR #39.
 
 ### What was implemented
 
