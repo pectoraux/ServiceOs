@@ -6,24 +6,27 @@ WORK-009 — Service / Vertical Runtime
 
 ## Status
 
-IN_FLIGHT
+FINALIZED
 
 ## Activation
 
-Activated by the Architect on 2026-09-01.
+Activated by the Architect on 2026-09-01 and finalized after Architect verification and merge on 2026-09-02.
 
 - Activation issue: #31
 - Implementation branch: `feat/WORK-009-service-runtime`
 - Activation baseline: `65d527b1aba75a025e5c5b4bf23c71bdcb32a3cf`
+- Implementation revision: `75dc1d6036c6be5e45ce6126a47fb199672be46d`
+- Merge revision: `34d955320a998aae1544b6dc7423801fd1de1557`
 - Assurance profile: `HIGH_ASSURANCE`
 - Implementation authority: Z.ai
 - Review / merge / finalization authority: Architect
 
-## Preconditions
+## Final Verification
 
-- WORK-003 is complete.
-- WORK-015 has passed Architect verification and is merged.
-- No other Work Order is in flight.
+- Static, dynamic, discrimination, and concurrency proof classes satisfied.
+- Final delivery CI passed with 580/580 tests, 0 failed, 0 skipped, including 59 live PostgreSQL proofs.
+- The discovered same-key idempotency race was corrected before merge through post-lock idempotency re-checks.
+- No frozen architecture change, new authority, or ServiceOS-side AI execution infrastructure was introduced.
 
 ## Authorized Surface
 
@@ -46,14 +49,6 @@ Activated by the Architect on 2026-09-01.
 5. Zeck capability requirements declare capabilities only; service configuration never selects a model/provider.
 6. Vertical runtime remains provider-neutral and cannot import AI provider infrastructure.
 
-## Proof Requirement
-
-The delivery must provide `static`, `dynamic`, `discrimination`, and `concurrency` proofs for package registration/versioning and authority-preservation behavior.
-
-## Forbidden Scope
-
-No AI engine implementation, no model/provider selection, no vertical logic leaking into horizontal authorities, and no changes to frozen v1.0 architecture.
-
 ## Governance Rule
 
-No architecture change is authorized by this activation. Any change to the frozen v1.0 architecture requires a separate Architect decision and ADR before implementation.
+No architecture change was authorized by this activation. Any change to frozen v1.0 architecture requires a separate Architect decision and ADR before implementation.
