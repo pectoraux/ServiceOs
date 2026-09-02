@@ -6,7 +6,7 @@ WORK-006 — Durable Event Inbox/Outbox
 
 ## Status
 
-IN_FLIGHT
+COMPLETE
 
 ## Activation
 
@@ -15,13 +15,15 @@ Activated by the Architect on 2026-09-02.
 - Activation issue: #58
 - Implementation branch: `feat/WORK-006-event-inbox-outbox`
 - Activation baseline: `23f6d604d9d43f32b89ab5781a28b74975465046`
+- Activation tip: `ef5df012028aa24379ab7c2f6a82fb2babee63c2`
 - Assurance profile: `HIGH_ASSURANCE`
 - Implementation authority: Z.ai
 - Review / merge / finalization authority: Architect
-- Pull request: pending
-- Implementation revision: pending
-- Merge commit: pending
-- Architect verdict: pending
+- Pull request: #59
+- Implementation revision: `6dcaa4bfa1b6a96dbf938da7cd9167b713945678`
+- Merge commit: `0d9f9960c3d6e0644e383916d154ed7a1e64a20f`
+- Architect verdict: APPROVED
+- Final post-merge CI: `33682588935` — success (repository-governance + foundation)
 
 ## Preconditions
 
@@ -67,3 +69,9 @@ Required proof classes: `static`, `dynamic`, `discrimination`, `concurrency`.
 ## Governance Rule
 
 Only this Work Order may be in flight. Any architecture change requires a separate Architect decision and ADR before implementation. Zeck remains the sole AI execution authority.
+
+## Finalization Record
+
+WORK-006 was independently verified at implementation/evidence head `6dcaa4bfa1b6a96dbf938da7cd9167b713945678`. The final substantive CI run `33678152864` executed 860/860 tests with 0 failures and 0 skipped, including all 107 live-PostgreSQL proofs and all four required proof classes. The implementation was merged as `0d9f9960c3d6e0644e383916d154ed7a1e64a20f`. Post-merge canonical CI run `33682588935` succeeded on the merge commit with both repository-governance and foundation jobs green. Canonical state was then reconciled to the actual merge commit and WORK-006 was moved from `in_flight` to `complete`; WORK-010 and WORK-012 are the eligible next frontier.
+
+Known limitations preserved from scope: no real event delivery adapter ships; the provider-neutral outbox boundary remains closed until a later Work Order owns provider/destination configuration; no HTTP/webhook receiver surface ships because WORK-012 owns the control-plane API.
