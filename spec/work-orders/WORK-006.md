@@ -1,9 +1,12 @@
 # WORK-006
 
-Status: planned
+Status: in_flight
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: HIGH_ASSURANCE
+Activation Issue: #58
+Implementation Branch: `feat/WORK-006-event-inbox-outbox`
+Activation Baseline: `23f6d604d9d43f32b89ab5781a28b74975465046`
 
 ## Objective
 
