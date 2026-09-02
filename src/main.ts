@@ -36,6 +36,7 @@ import { createZeckModule } from './modules/zeck/index.js';
 import { createServicesModule } from './modules/services/index.js';
 import { createBillingModule } from './modules/billing/index.js';
 import { createEvidenceModule } from './modules/evidence/index.js';
+import { createApprovalsModule } from './modules/approvals/index.js';
 
 import auth from './modules/auth/index.js';
 import organizations from './modules/organizations/index.js';
@@ -235,6 +236,29 @@ export async function main(): Promise<void> {
     executor,
     tenancy: organizationsModule,
     work: workModule,
+  });
+
+  // Business/human approval authority (/approvals, WORK-008;
+  // architecture-lock #3: the SOLE ServiceOS authority for
+  // business/human approval state): the explicit approval request
+  // ledger + the one-terminal-decision immutable decision ledger.
+  // It consumes the single authorization chain, /work's public read
+  // (request binding validation, read-only — /approvals never mutates
+  // work state) and /policies' public evaluation hook (the applicable-
+  // policy binding; a deny fails closed and the request is never
+  // created — never a duplicate policy engine). Approval is an
+  // EXPLICIT HUMAN authority: only authenticated human principals
+  // decide (the module rejects machine principals before any durable
+  // effect — an AI result is never approval); simultaneous
+  // approve/reject converges deterministically to ONE terminal
+  // decision. Zeck's own human-escalation primitive is untouched (no
+  // /zeck import). No HTTP surface (WORK-012 owns the control-plane
+  // API — its approval views consume this public contract).
+  const approvalsModule = createApprovalsModule({
+    executor,
+    tenancy: organizationsModule,
+    work: workModule,
+    policies: policiesModule,
   });
 
   const modules = registerModules(SERVICE_MODULES);

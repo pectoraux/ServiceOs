@@ -115,6 +115,11 @@ export const ALLOWED_MIGRATION_TABLE_PREFIXES: readonly string[] = [
   // verification decision ledger — no lifecycle, no parallel AI
   // execution evidence store, checked by checkEvidenceBoundaries).
   'evidence_',
+  // WORK-008 owns the /approvals tables (migration 0010: the approval
+  // request ledger + the one-terminal-decision immutable approval
+  // decision ledger — no AI/agent decider surface, no credentials,
+  // checked by checkApprovalsBoundaries).
+  'approval_',
 ];
 
 const MODULE_WORK = 'work';

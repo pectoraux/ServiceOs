@@ -409,11 +409,28 @@ test('TRUE parallel actors converge over real SQL (independent pooled clients)',
   const zeckB = createZeckModule({ executor: executorB, tenancy: organizationsB, work: workB, gateway: gatewayB, now: () => new Date('2026-09-02T12:00:00.000Z') });
   try {
     // Same-key submissions: one durable intent, ONE execution reference,
-    // both calls hold the same identities.
+    // both calls hold the same identities. The SAME-GATEWAY composition
+    // makes this convergence proof TIMING-INDEPENDENT: the gateway
+    // double is deterministic per logical intent (executionsByIntent),
+    // so both racers dispatch the SAME foreign execution identity and
+    // the second attach converges under ANY interleaving. (Through two
+    // distinct gateway doubles the same-key race is genuinely
+    // divergent-foreign-identity territory — a legal REFERENCE_CONFLICT
+    // when the second racer's registration converges between the first
+    // racer's registration and reference pin — which is the
+    // misbehaving-gateway section's territory, not this convergence
+    // proof; that timing window was the CI flake of run 33660272203.)
+    const zeckBSameGateway = createZeckModule({
+      executor: executorB,
+      tenancy: organizationsB,
+      work: workB,
+      gateway: app.gateway,
+      now: () => new Date('2026-09-02T12:00:00.000Z'),
+    });
     const input = intentInput(app, 'parallel-same-key');
     const [a, b] = await Promise.all([
       app.zeck.submitExecutionIntent(app.owner, input),
-      zeckB.submitExecutionIntent(app.colleague, input),
+      zeckBSameGateway.submitExecutionIntent(app.colleague, input),
     ]);
     assert.equal(a.intent.id, b.intent.id, 'ONE durable intent');
     assert.equal(a.intent.zeckExecutionId, b.intent.zeckExecutionId, 'ONE execution reference');
