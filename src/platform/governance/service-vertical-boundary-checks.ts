@@ -126,8 +126,8 @@ export const SERVICES_ALLOWED_IMPORTS: readonly string[] = ['auth', 'organizatio
 /** Modules allowed to import /verticals (frontier-relative). */
 export const VERTICALS_IMPORTERS: readonly string[] = ['services'];
 
-/** Modules allowed to import /services (frontier-relative: none yet). */
-export const SERVICES_IMPORTERS: readonly string[] = [];
+/** Modules allowed to import /services (frontier-relative). */
+export const SERVICES_IMPORTERS: readonly string[] = ['billing'];
 
 const MODULE_VERTICLES = 'verticals';
 const MODULE_SERVICES = 'services';
@@ -292,7 +292,7 @@ export function checkServiceVerticalBoundaries(options: ServiceVerticalBoundaryC
             violations.push(
               violation(
                 'service-import-direction',
-                `module /${moduleName} imports /services; no module consumes the service authority at this frontier (WORK-010/012 extend through their own scopes)`,
+                `module /${moduleName} imports /services; only the billing authority consumes the service catalog at this frontier (${SERVICES_IMPORTERS.join(', ')})`,
                 file,
               ),
             );

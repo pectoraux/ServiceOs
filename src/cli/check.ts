@@ -27,6 +27,7 @@ import {
   checkWorkflowBoundaries,
   checkExternalInteractionBoundaries,
   checkServiceVerticalBoundaries,
+  checkBillingBoundaries,
   readProgramState,
   currentLiveWorkOrder,
   GovernanceError,
@@ -73,6 +74,7 @@ function main(): void {
     ...checkWorkflowBoundaries({ srcRoot }),
     ...checkExternalInteractionBoundaries({ srcRoot }),
     ...checkServiceVerticalBoundaries({ srcRoot }),
+    ...checkBillingBoundaries({ srcRoot }),
   ];
   if (violations.length > 0) {
     for (const violation of violations) {
@@ -101,6 +103,9 @@ function main(): void {
   );
   console.log(
     `services/verticals: single service-definition and vertical-registration authorities, no AI runtime or Zeck imports in the service catalog, verticals stay pure, services bind through public contracts (no violations)`,
+  );
+  console.log(
+    `billing: single customer-economics authority, no provider-level AI usage/cost authority anywhere, no Zeck import in /billing, billing binds the catalog and meters real work, cost references stay opaque (no violations)`,
   );
 
   // 3. Canonical governance state: frontier + Work Order identity (AC-4).

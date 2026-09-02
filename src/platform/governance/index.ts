@@ -66,6 +66,14 @@ export {
   type ServiceVerticalBoundaryCheckOptions,
 } from './service-vertical-boundary-checks.js';
 export {
+  checkBillingBoundaries,
+  RESERVED_BILLING_AUTHORITY_EXPORTS,
+  RESERVED_AI_COST_AUTHORITY_EXPORTS,
+  BILLING_ALLOWED_IMPORTS,
+  BILLING_IMPORTERS,
+  type BillingBoundaryCheckOptions,
+} from './billing-boundary-checks.js';
+export {
   checkExternalInteractionBoundaries,
   RESERVED_INTERACTION_AUTHORITY_EXPORTS,
   RESERVED_ADAPTER_AUTHORITY_EXPORTS,

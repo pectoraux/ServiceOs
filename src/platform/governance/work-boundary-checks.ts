@@ -98,6 +98,8 @@ export const ALLOWED_MIGRATION_TABLE_PREFIXES: readonly string[] = [
   // WORK-009 owns the service/vertical runtime tables (migration 0006).
   'verticals_',
   'services_',
+  // WORK-011 owns the billing tables (migration 0007).
+  'billing_',
 ];
 
 const MODULE_WORK = 'work';
@@ -130,7 +132,7 @@ function* walkTsFiles(root: string): Generator<string> {
   }
 }
 
-function listSqlFiles(dir: string): string[] {
+export function listSqlFiles(dir: string): string[] {
   try {
     return readdirSync(dir)
       .filter((name) => name.endsWith('.sql'))
