@@ -1,9 +1,12 @@
 # WORK-008
 
-Status: planned
+Status: in_flight
 Owner: Architect
 Architecture Version: v1.0
 Assurance Profile: HIGH_ASSURANCE
+Activation Issue: #55
+Implementation Branch: `feat/WORK-008-business-approval`
+Activation Baseline: `04cf82d618fe006e8cc1f31bc03105c3a1e7c5a2`
 
 ## Objective
 
