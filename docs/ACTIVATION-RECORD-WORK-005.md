@@ -15,10 +15,15 @@ Activated by the Architect on 2026-09-02.
 - Activation issue: #36
 - Implementation branch: `feat/WORK-005-zeck-integration`
 - Activation baseline: `bd11baa497574e576db57c0bc8d6035bb91eec6d`
-- Activation checkpoint: `4a82f3cb3b492443b10873fa3804d2af3aa79303`
 - Assurance profile: `CRITICAL`
 - Implementation authority: Z.ai
 - Review / merge / finalization authority: Architect
+
+## Preconditions
+
+- WORK-004 is complete.
+- WORK-011 is complete and canonical state has been reconciled.
+- No other Work Order is in flight.
 
 ## Authorized Surface
 
