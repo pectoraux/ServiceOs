@@ -285,7 +285,7 @@ test('schema backstops: the closed vocabularies and the stable identity are phys
          VALUES ($1, $2, 'email', 'evt-shape', 'interaction.delivery_result', now(), '{}', 'h', 'received', $3, now(), $3, 'h')`,
         [crypto.randomUUID(), app.tenantId, app.owner.id],
       ),
-      /violates check constraint "event_inbox_received_shape"/,
+      /violates check constraint "event_inbox_(received_shape|claim_present)"/,
     );
     void interaction;
     // The closed source taxonomy: 'zeck' is not an event source (its
@@ -504,11 +504,14 @@ test('a moving clock never breaks read-side integrity (the record hash pins ever
     const reread = await app.interactions.getOutboxEvent(app.owner, app.tenantId, event.id);
     assert.equal(reread.state, 'dispatched');
 
-    // The inbox side too.
+    // The inbox side too — over a FRESH dispatched interaction (the
+    // outbox part's interaction is terminally observed; a delivery
+    // result for it would correctly fail OBSERVATION_STATE_INVALID).
+    const clockInteraction = await dispatchedInteraction(app);
     const { event: inboxEvent } = await app.interactions.ingestExternalEvent(
       app.owner,
       app.tenantId,
-      deliveryResult(interactionId, 'evt-clock'),
+      deliveryResult(clockInteraction, 'evt-clock'),
     );
     app.now.value = new Date('2026-09-03T09:32:00.000Z');
     const { outcomes } = await app.interactions.processInboxEvents(app.owner, app.tenantId);
@@ -516,6 +519,7 @@ test('a moving clock never breaks read-side integrity (the record hash pins ever
     app.now.value = new Date('2026-09-03T09:33:00.000Z');
     const inboxReread = await app.interactions.getInboxEvent(app.owner, app.tenantId, inboxEvent.id);
     assert.equal(inboxReread.state, 'consumed');
+    assert.equal((await app.interactions.getInteraction(app.owner, app.tenantId, clockInteraction)).state, 'observed');
   });
 });
 
@@ -543,10 +547,13 @@ test('cross-tenant event access fails closed (SQL tenant predicates)', { skip: S
     assert.equal(error.code, 'EVENT_NOT_FOUND');
     const listed = await app.interactions.listInboxEvents(outsider, other.tenant.id);
     assert.equal(listed.length, 0);
-    const processError = await interactionsError(app.interactions.processInboxEvents(outsider, other.tenant.id, {}));
-    // An empty claimable set for the other tenant: no outcomes, no
-    // cross-tenant processing.
-    assert.ok(processError === null || processError.code === 'TENANT_FORBIDDEN');
+    // An empty claimable set for the other tenant: the call succeeds
+    // with NO outcomes — no cross-tenant processing ever happens.
+    const processed = await app.interactions.processInboxEvents(outsider, other.tenant.id, {});
+    assert.equal(processed.outcomes.length, 0);
+    // The foreign event was never consumed by the other tenant's worker.
+    const stillReceived = await app.interactions.getInboxEvent(app.owner, app.tenantId, event.id);
+    assert.equal(stillReceived.state, 'received');
   });
 });
 
