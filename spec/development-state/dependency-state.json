@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "currentGeneration": {
-    "complete": ["WORK-001","WORK-002","WORK-003","WORK-014","WORK-004","WORK-015","WORK-009","WORK-011","WORK-005","WORK-007"],
-    "inFlight": ["WORK-008"]
+    "complete": ["WORK-001","WORK-002","WORK-003","WORK-014","WORK-004","WORK-015","WORK-009","WORK-011","WORK-005","WORK-007","WORK-008"],
+    "inFlight": []
   },
   "futureGeneration": {
     "WORK-006": ["WORK-004","WORK-015"],
@@ -13,7 +13,7 @@
   "futureGenerationEligibility": {
     "WORK-006":"ready",
     "WORK-010":"blocked",
-    "WORK-012":"blocked",
+    "WORK-012":"ready",
     "WORK-013":"blocked"
   }
 }
