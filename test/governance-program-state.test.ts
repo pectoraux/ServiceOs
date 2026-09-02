@@ -136,13 +136,17 @@ function fixtureState(options: FixtureOptions = {}): { root: string; cleanup: ()
     JSON.stringify(configuredFrontier, null, 2),
   );
   for (const fileName of workOrderFiles) {
+    const workOrderId = fileName.replace(/\.md$/, '');
+    const entry = (configuredProgram.workOrders as any[]).find((candidate) => candidate.id === workOrderId);
+    const configuredStatus = entry?.status;
     const text = readFileSyncText(join(REPO_ROOT, 'spec/work-orders', fileName));
-    const mutated =
-      options.workOrderStatus !== undefined && fileName === `${liveId}.md`
-        ? text.replace(/^Status:\s*\w+\s*$/m, `Status: ${options.workOrderStatus}`)
-        : fileName === `${liveId}.md`
-          ? text.replace(/^Status:\s*\w+\s*$/m, 'Status: in_flight')
-          : text;
+    let mutated = text;
+    if (typeof configuredStatus === 'string') {
+      mutated = mutated.replace(/^Status:\s*\w+\s*$/m, `Status: ${configuredStatus}`);
+    }
+    if (options.workOrderStatus !== undefined && fileName === `${liveId}.md`) {
+      mutated = mutated.replace(/^Status:\s*\w+\s*$/m, `Status: ${options.workOrderStatus}`);
+    }
     writeFileSync(join(root, 'spec/work-orders', fileName), mutated);
   }
   return { root, cleanup: () => rmSync(root, { recursive: true, force: true }), liveId };
@@ -264,8 +268,6 @@ test('duplicate Work Order records fail closed', () => {
 test('currentLiveWorkOrder returns null when nothing is in flight', () => {
   const { root, cleanup } = fixtureState({
     programState: (program: any) => {
-      // Keep every Work Order present so the reader can still cross-check
-      // the fixture, but finalize the fixture era by marking all records complete.
       for (const workOrder of program.workOrders as any[]) workOrder.status = 'complete';
       return program;
     },
