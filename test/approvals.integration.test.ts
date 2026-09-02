@@ -222,9 +222,16 @@ function decideInput(app: LiveApp, requestId: string, key: string, over: Partial
   };
 }
 
-async function expectCode(error: unknown, code: string): Promise<void> {
+/**
+ * A rejection validator for assert.rejects: asserts the typed code and
+ * returns TRUE (node's assert.rejects requires a truthy validation
+ * return; an async validator resolving undefined fails even when the
+ * error matched — the CI live-verification defect of the first run).
+ */
+async function expectCode(error: unknown, code: string): Promise<boolean> {
   assert.ok(error instanceof ApprovalError, `expected ApprovalError, got ${String(error)}`);
   assert.equal(error.code, code);
+  return true;
 }
 
 async function pendingRequest(app: LiveApp, key = 'request-1'): Promise<string> {
