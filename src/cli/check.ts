@@ -31,6 +31,7 @@ import {
   checkZeckBoundaries,
   checkEvidenceBoundaries,
   checkApprovalsBoundaries,
+  checkEventBoundaries,
   readProgramState,
   currentLiveWorkOrder,
   GovernanceError,
@@ -81,6 +82,7 @@ function main(): void {
     ...checkZeckBoundaries({ srcRoot, migrationsDir: resolve(repoRoot, 'db/migrations') }),
     ...checkEvidenceBoundaries({ srcRoot, migrationsDir: resolve(repoRoot, 'db/migrations') }),
     ...checkApprovalsBoundaries({ srcRoot, migrationsDir: resolve(repoRoot, 'db/migrations') }),
+    ...checkEventBoundaries({ srcRoot, migrationsDir: resolve(repoRoot, 'db/migrations') }),
   ];
   if (violations.length > 0) {
     for (const violation of violations) {
@@ -121,6 +123,9 @@ function main(): void {
   );
   console.log(
     `approvals: single business/human approval authority, explicit human decisions only (no AI/agent approval surface), one terminal decision per request, no Zeck-escalation replacement, no module consumes the authority yet (no violations)`,
+  );
+  console.log(
+    `events: single durable event inbox/outbox authority inside /interactions, frozen horizontal event vocabularies, no AI/credential columns in the event tables, no direct provider/delivery surface outside the authority (no violations)`,
   );
 
   // 3. Canonical governance state: frontier + Work Order identity (AC-4).

@@ -1,8 +1,14 @@
 /**
- * ServiceOS module: /interactions (WORK-015 implementation).
+ * ServiceOS module: /interactions (WORK-015 + the WORK-006 durable event
+ * inbox/outbox substrate).
  *
  * External communications and the provider-neutral interaction ledger
- * (architecture.md §6, §13; integration-model.md "Outbound effects").
+ * (architecture.md §6, §13; integration-model.md "Outbound effects"),
+ * plus the durable event inbox/outbox (architecture.md §14;
+ * integration-model.md "Inbound events" — the WORK-006 authorized
+ * surface: event ingestion, durable inbox/outbox, worker dispatch,
+ * callback ingestion, idempotent event consumers, provider-independent
+ * event contracts).
  *
  * Authority (authority matrix / Work Order frozen scope):
  * - THE EXTERNAL INTERACTION LEDGER is owned here: `createInteraction`
@@ -57,6 +63,32 @@
  * - NO ZECK/AI AUTHORITY (forbidden surface): AI execution intents flow
  *   through the /zeck module (WORK-005); nothing here models, routes or
  *   executes AI.
+ *
+ * WORK-006 — the durable event substrate (architecture.md §14):
+ * - THE EVENT INBOX/OUTBOX AUTHORITY lives here (the module §6 owns
+ *   "external communications"): the durable, deduplicated external
+ *   event inbox (inbound provider events and callback ingestion), the
+ *   durable outbound event outbox (intent before delivery, worker
+ *   dispatch through the provider-neutral event delivery port), and
+ *   the worker-dispatch machinery. A module other than /interactions
+ *   exporting event-substrate entry points is an architecture
+ *   violation (checked structurally by the WORK-006 boundary checks).
+ * - INBOUND/OUTBOUND EVENT PROCESSING IS DURABLE AND IDEMPOTENT: one
+ *   durable inbox record per stable identity (tenant, source,
+ *   external event id — the provider's identity preserved verbatim);
+ *   identical re-deliveries converge, divergent ones fail closed;
+ *   processing is worker-claimed (atomic CAS) and the composed
+ *   consumer is idempotent by durable identity — two consumers of the
+ *   same event never produce duplicate domain effects.
+ * - ZECK CALLBACKS USE THE SAME DURABLE INGESTION GUARANTEES (AC-4):
+ *   the inbox's guarantee set mirrors the /zeck callback ledger
+ *   (durable record, stable-identity dedup, delivery-hash replay
+ *   convergence, typed rejections durably recorded). /zeck keeps its
+ *   own translated-callback authority — nothing here shadows it.
+ * - NO VERTICAL-SPECIFIC EVENT MEANINGS, NO AI EXECUTION ENGINE
+ *   (forbidden surfaces): the event vocabularies are frozen horizontal
+ *   enumerations (frozen code, never data); unknown event types fail
+ *   closed as durably recorded rejections.
  */
 import type { TransactionalExecutor } from '../../platform/persistence/index.js';
 import { defineModule } from '../../platform/module-registry/index.js';
@@ -71,7 +103,14 @@ import {
   type ExternalEffectSink,
 } from '../integrations/index.js';
 import { createSqlInteractionsStore } from './sql-store.js';
+import { createSqlEventsStore } from './events-sql-store.js';
+import { createEventSubstrate, type EventSubstrateSurface, type InboxProcessResult } from './events.js';
 import { hashInteractionInput } from './provenance.js';
+import {
+  EventsStoreMissingError,
+  EventsStoreRuleError,
+  type EventsStore,
+} from './events-store.js';
 import {
   InteractionsStoreMissingError,
   InteractionsStoreRuleError,
@@ -87,12 +126,89 @@ import {
   type InteractionRecord,
   type InteractionState,
   type InteractionsStore,
-  type InteractionsStoreRule,
   type PolicyProvenance,
   type ReclaimDispatchInput,
   type RecordDispatchFailureInput,
   type RecordObservationInput,
+  type InteractionsStoreRule,
 } from './store.js';
+import type { EventDeliveryPort } from './events-delivery.js';
+
+// Event-substrate store port + frozen vocabularies (WORK-006 public
+// contract): the authoritative SQL implementation runs through the
+// persistence boundary; tests inject faithful in-memory implementations
+// of the same port through this surface.
+export { createSqlEventsStore } from './events-sql-store.js';
+export {
+  EventsStoreMissingError,
+  EventsStoreRuleError,
+  isInboundEventType,
+  isOutboundEventType,
+  INBOUND_EVENT_TYPES,
+  OUTBOUND_EVENT_TYPES,
+} from './events-store.js';
+export type {
+  ClaimInboxEventInput,
+  ClaimOutboxEventInput,
+  CompleteInboxEventInput,
+  CompleteOutboxDispatchInput,
+  CreateOutboxEventInput,
+  EventsStore,
+  EventsStoreRule,
+  FailInboxEventInput,
+  FailOutboxDispatchInput,
+  InboundEventType,
+  InboxEventClaim,
+  InboxEventConsumption,
+  InboxEventFailure,
+  InboxEventFilter,
+  InboxEventRecord,
+  InboxEventRejection,
+  InboxEventState,
+  IngestInboxEventInput,
+  InteractionDeliveryResultPayload,
+  InteractionObservedPayload,
+  OutboxEventDispatch,
+  OutboxEventFailure,
+  OutboxEventFilter,
+  OutboxEventRecord,
+  OutboxEventState,
+  OutboundEventType,
+  ReclaimInboxEventInput,
+  ReclaimOutboxDispatchInput,
+  RetryInboxEventInput,
+} from './events-store.js';
+
+// Event-substrate delivery port + contract-conformant test double
+// (WORK-006 public contract — no real delivery adapter ships in this
+// Work Order; the boundary composes closed until the Work Order owning
+// provider/destination configuration registers one).
+export { createInMemoryEventDelivery } from './events-delivery.js';
+export type {
+  EventDeliveryAcceptance,
+  EventDeliveryPort,
+  EventDeliveryRequest,
+  InMemoryEventDelivery,
+  ProviderEventDeliveryOptions,
+  RecordedProviderEvent,
+} from './events-delivery.js';
+
+// Event-substrate provenance hashing (part of the event contract).
+export {
+  computeInboxEventRecordHash,
+  computeOutboxEventRecordHash,
+  hashEventDelivery,
+  hashOutboundInput,
+} from './provenance.js';
+export type {
+  EventDeliveryCore,
+  HashableInboxEventRecord,
+  HashableOutboxEventRecord,
+  OutboundIntentCore,
+} from './provenance.js';
+
+// The durable event substrate's public result/shape exports.
+export type { InboxProcessResult } from './events.js';
 
 // Store port (public contract): the authoritative SQL implementation runs
 // through the persistence boundary; tests inject faithful in-memory
@@ -178,7 +294,23 @@ export type InteractionsErrorCode =
   | 'POLICY_DENIED'
   | 'POLICY_EVALUATION_FAILED'
   | 'ADAPTER_UNAVAILABLE'
-  | 'INTERACTION_RECORD_TAMPERED';
+  | 'INTERACTION_RECORD_TAMPERED'
+  // WORK-006: the durable event substrate's typed error surface.
+  | 'EVENT_NOT_FOUND'
+  | 'EVENT_NOT_OBSERVED'
+  | 'EVENT_INPUT_CONFLICT'
+  | 'EVENT_DELIVERY_CONFLICT'
+  | 'EVENT_UNKNOWN_TYPE'
+  | 'EVENT_INVALID_PAYLOAD'
+  | 'EVENT_UNCORRELATED'
+  | 'INBOX_EVENT_IN_PROGRESS'
+  | 'INBOX_EVENT_NOT_FAILED'
+  | 'INBOX_EVENT_REJECTED'
+  | 'INBOX_RECOVERY_NOT_AVAILABLE'
+  | 'OUTBOX_EVENT_IN_PROGRESS'
+  | 'OUTBOX_RECOVERY_NOT_AVAILABLE'
+  | 'EVENT_DELIVERY_UNAVAILABLE'
+  | 'EVENT_RECORD_TAMPERED';
 
 export class InteractionsError extends Error {
   constructor(
@@ -195,6 +327,20 @@ export interface InteractionsModuleOptions {
   executor?: TransactionalExecutor;
   /** Test seam: inject a faithful in-memory store instead (tests only). */
   store?: InteractionsStore;
+  /**
+   * Test seam: inject a faithful in-memory event-substrate store
+   * (WORK-006). Required when `store` is injected; production wiring
+   * derives the SQL event store from the executor.
+   */
+  eventsStore?: EventsStore;
+  /**
+   * The provider-neutral outbound event delivery port (WORK-006).
+   * Optional by design: when absent the outbox delivery boundary ships
+   * CLOSED — dispatch fails closed EVENT_DELIVERY_UNAVAILABLE and the
+   * durable intent stands recoverable until the Work Order owning
+   * provider/destination configuration registers a real adapter.
+   */
+  eventDelivery?: EventDeliveryPort;
   /** The single authorization chain, injected by the composition root. */
   tenancy: TenancyAuthorization;
   /** The policy gate, consumed from /policies' public interface. */
@@ -220,7 +366,7 @@ export interface DispatchOutcome {
   readonly converged: boolean;
 }
 
-export interface InteractionsModule {
+export interface InteractionsModule extends EventSubstrateSurface {
   /**
    * THE durable-intent surface (AC-1): persist the external effect intent
    * (state `intended`) BEFORE any side effect. Authorization first; an
@@ -443,6 +589,29 @@ export function createInteractionsModule(options: InteractionsModuleOptions): In
   const sink = options.sink;
   const now = options.now ?? (() => new Date());
 
+  // The event substrate's store (WORK-006): derived from the executor in
+  // production; injected together with the in-memory interaction store in
+  // tests (the in-memory seam requires BOTH stores — the substrate's
+  // correlation validation reads through the interaction store).
+  let eventsStore: EventsStore;
+  if (options.eventsStore !== undefined) {
+    if (options.executor !== undefined) {
+      throw new InteractionsError(
+        'INVALID_INPUT',
+        'createInteractionsModule accepts eventsStore only with the in-memory store seam (production wiring derives the SQL event store from the executor)',
+      );
+    }
+    eventsStore = options.eventsStore;
+  } else {
+    if (options.executor === undefined) {
+      throw new InteractionsError(
+        'INVALID_INPUT',
+        'createInteractionsModule requires an eventsStore together with the injected in-memory interaction store (the event substrate is composed unconditionally)',
+      );
+    }
+    eventsStore = createSqlEventsStore(options.executor);
+  }
+
   /** Authorization BEFORE any domain data access (single chain). */
   async function requireTenantAccess(principal: Principal, tenantId: string, action: TenancyAction): Promise<void> {
     validateUuid(tenantId, 'tenantId');
@@ -451,6 +620,62 @@ export function createInteractionsModule(options: InteractionsModuleOptions): In
       throw denyToError(decision.reason, tenantId);
     }
   }
+
+  /**
+   * THE observed-result implementation, shared by the module's public
+   * `recordObservedResult` surface and the event substrate's inbox
+   * consumer (the ONE observation path — never a second observation
+   * authority). Authorization + validation + the convergent store write.
+   */
+  async function recordObservedResultImpl(
+    principal: Principal,
+    tenantId: string,
+    interactionId: string,
+    input: { outcome: InteractionOutcome; providerObservation?: unknown },
+  ): Promise<{ interaction: InteractionRecord; converged: boolean }> {
+    await requireTenantAccess(principal, tenantId, 'write');
+    validateUuid(interactionId, 'interactionId');
+    if (input.outcome !== 'succeeded' && input.outcome !== 'failed') {
+      throw new InteractionsError('INVALID_INPUT', 'outcome must be "succeeded" or "failed"');
+    }
+    const observation = input.providerObservation ?? {};
+    try {
+      validateObservation(observation);
+    } catch (error) {
+      throw new InteractionsError('INVALID_INPUT', (error as Error).message);
+    }
+    try {
+      return await store.recordObservation({
+        tenantId,
+        interactionId,
+        outcome: input.outcome,
+        providerObservation: observation,
+        observedBy: principal.id,
+        now: now(),
+      });
+    } catch (error) {
+      return mapStoreError(error);
+    }
+  }
+
+  // The durable event substrate (WORK-006), composed over the module's
+  // shared authorities: the single authorization chain, the interaction
+  // read (correlation validation, read-only), the ONE observation path
+  // (the inbox consumer) and the policy gate (the outbox intent gate).
+  // The delivery port is optional: absent, the outbox delivery boundary
+  // ships CLOSED (truthful EVENT_DELIVERY_UNAVAILABLE, claim standing).
+  const eventSubstrate = createEventSubstrate(
+    {
+      authorizeTenant: requireTenantAccess,
+      findInteraction: (tenantId, interactionId) => store.findInteractionById(tenantId, interactionId),
+      recordObservation: recordObservedResultImpl,
+      evaluatePolicy: (principal, input) => policies.evaluatePolicy(principal, input),
+      ...(options.eventDelivery !== undefined ? { eventDelivery: options.eventDelivery } : {}),
+      now,
+    },
+    eventsStore,
+    (code, message) => new InteractionsError(code as InteractionsErrorCode, message),
+  );
 
   /**
    * The dispatch core shared by `dispatchInteraction` (claim from
@@ -715,29 +940,9 @@ export function createInteractionsModule(options: InteractionsModuleOptions): In
     },
 
     async recordObservedResult(principal, tenantId, interactionId, input) {
-      await requireTenantAccess(principal, tenantId, 'write');
-      validateUuid(interactionId, 'interactionId');
-      if (input.outcome !== 'succeeded' && input.outcome !== 'failed') {
-        throw new InteractionsError('INVALID_INPUT', 'outcome must be "succeeded" or "failed"');
-      }
-      const observation = input.providerObservation ?? {};
-      try {
-        validateObservation(observation);
-      } catch (error) {
-        throw new InteractionsError('INVALID_INPUT', (error as Error).message);
-      }
-      try {
-        return await store.recordObservation({
-          tenantId,
-          interactionId,
-          outcome: input.outcome,
-          providerObservation: observation,
-          observedBy: principal.id,
-          now: now(),
-        });
-      } catch (error) {
-        return mapStoreError(error);
-      }
+      // THE ONE observation path (shared with the event substrate's inbox
+      // consumer — never a second observation authority).
+      return recordObservedResultImpl(principal, tenantId, interactionId, input);
     },
 
     async getInteraction(principal, tenantId, interactionId) {
@@ -790,6 +995,10 @@ export function createInteractionsModule(options: InteractionsModuleOptions): In
         return mapStoreError(error);
       }
     },
+
+    // The durable event substrate (WORK-006): the inbox/outbox surface
+    // composed above over the module's shared authorities.
+    ...eventSubstrate,
   };
 }
 
@@ -800,6 +1009,6 @@ export function createInteractionsModule(options: InteractionsModuleOptions): In
  */
 export default defineModule({
   name: 'interactions',
-  version: '1.0.0',
-  description: 'external communications and provider-neutral interaction ledger',
+  version: '1.1.0',
+  description: 'external communications, provider-neutral interaction ledger and durable event inbox/outbox',
 });
