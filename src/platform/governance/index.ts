@@ -52,6 +52,15 @@ export {
   type ZeckBoundaryCheckOptions,
 } from './zeck-boundary-checks.js';
 export {
+  checkEvidenceBoundaries,
+  RESERVED_EVIDENCE_AUTHORITY_EXPORTS,
+  RESERVED_AI_EVIDENCE_EXPORTS,
+  EVIDENCE_ALLOWED_IMPORTS,
+  EVIDENCE_IMPORTERS,
+  EVIDENCE_SCHEMA_COLUMN_DENYLIST,
+  type EvidenceBoundaryCheckOptions,
+} from './evidence-boundary-checks.js';
+export {
   checkPoliciesBoundaries,
   RESERVED_POLICY_AUTHORITY_EXPORTS,
   RESERVED_AI_POLICY_EXPORTS,

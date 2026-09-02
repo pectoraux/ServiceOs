@@ -110,6 +110,11 @@ export const ALLOWED_MIGRATION_TABLE_PREFIXES: readonly string[] = [
   // 0008: execution-intent linkage + translated callback ledger — no
   // Zeck execution lifecycle, checked by checkZeckBoundaries).
   'zeck_',
+  // WORK-007 owns the /evidence tables (migration 0009: the immutable
+  // attributable business-evidence ledger + the immutable outcome-
+  // verification decision ledger — no lifecycle, no parallel AI
+  // execution evidence store, checked by checkEvidenceBoundaries).
+  'evidence_',
 ];
 
 const MODULE_WORK = 'work';
