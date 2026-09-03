@@ -6,7 +6,7 @@ WORK-010 — Construction Subcontractor Compliance
 
 ## Status
 
-IN_FLIGHT
+COMPLETE
 
 ## Activation
 
@@ -18,20 +18,21 @@ Activated by the Architect on 2026-09-02.
 - Assurance profile: `CRITICAL`
 - Implementation authority: Z.ai
 - Review / merge / finalization authority: Architect
-- Pull request: pending
-- Implementation revision: pending
-- Merge commit: pending
-- Architect verdict: pending
+- Pull request: #62
+- Implementation revision: `372e1a18be7a19b1f887a3d9b4022644cf31562f`
+- Merge commit: `dc5be9aa676eb4a92264b64f3428abfa5231ce44`
+- Architect verdict: APPROVED
+- Finalized: 2026-09-03
 
 ## Preconditions
 
 - WORK-005 is complete.
-- WORK-006 is complete and canonical finalization CI is green on merge commit `0ef7148900572be30fc88af590e16633911aec61`.
+- WORK-006 is complete and canonical finalization CI is green on merge commit `0d9f9960c3d6e0644e383916d154ed7a1e64a20f`.
 - WORK-007 is complete.
 - WORK-009 is complete.
 - WORK-014 is complete.
 - WORK-015 is complete.
-- No other Work Order is in flight at activation.
+- No other Work Order was in flight at activation.
 
 ## Authorized Surface
 
@@ -69,10 +70,26 @@ Required proof classes: `static`, `dynamic`, `discrimination`, `concurrency`.
 - Discrimination / Mutation: direct provider SDK import fails; fabricated AI success cannot mark compliant; stale vendor attempt cannot overwrite a newer compliance decision.
 - Concurrency / Crash Safety: duplicate document callbacks converge; concurrent follow-up workers do not double-contact the vendor; duplicate Zeck requests converge by idempotency key.
 
+## Finalization Evidence
+
+- PR #62 was independently re-verified after the Architect's NOT APPROVED gate at `f5b761d`.
+- Required implementation corrections were present at final PR head `372e1a18be7a19b1f887a3d9b4022644cf31562f`, including nullable `idempotency_key` SQL mapping and package hashing that excludes volatile `assembledAt`.
+- CI run `33713286310` (run number 347) completed successfully on the final implementation head with repository-governance and foundation jobs green; the foundation job executed build/configuration/architecture checks, governance frontier validation, behavioral/structural/discrimination tests, and live-PostgreSQL tests.
+- PR #62 merged as `dc5be9aa676eb4a92264b64f3428abfa5231ce44` on 2026-09-03T04:25:22Z.
+- No architecture change was introduced.
+
+## Handoff State After Finalization
+
+- `frontier-state.currentMain` is `dc5be9aa676eb4a92264b64f3428abfa5231ce44`.
+- `currentLiveImplementation` is `null`.
+- `inFlight` is empty.
+- `plannedNext` is `WORK-012`.
+- `plannedFuture` is `WORK-012`, `WORK-013`.
+- WORK-012 is dependency-eligible; WORK-013 remains blocked by WORK-012.
+- `program-state.resumption.activeHandoffs` is empty.
+- WORK-010 is complete in the dependency and checkpoint ledgers.
+- The next Architect must perform the normal activation protocol for WORK-012; WORK-010 requires no further implementation work unless a new defect is independently discovered.
+
 ## Governance Rule
 
-Only this Work Order may be in flight. Any architecture change requires a separate Architect decision and ADR before implementation. Zeck remains the sole AI execution authority.
-
-## Activation Gate Note
-
-Activation state was reconciled across main and the implementation branch before the exact-head governance rerun. The note exists only to force the repository governance workflow to execute again; it changes no scope or authority.
+Only one Work Order may be in flight. Any architecture change requires a separate Architect decision and ADR before implementation. Zeck remains the sole AI execution authority.
