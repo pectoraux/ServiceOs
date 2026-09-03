@@ -283,7 +283,7 @@ export function validateW9Compliance(expectedTaxId: string, submittedTaxId: stri
 export function complianceEvidenceRequirements(projectRequiresW9: boolean, projectRequiresLicense: boolean): readonly string[] {
   const requirements = ['construction.subcontractor_profile', 'construction.insurance_certificate', 'construction.insurance_validation'];
   if (projectRequiresW9) {
-    requirements.push('construction.w9');
+    requirements.push('construction.w9', 'construction.w9_validation');
   }
   if (projectRequiresLicense) {
     requirements.push('construction.license', 'construction.license_validation');

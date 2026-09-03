@@ -557,6 +557,26 @@ export function createConstructionCompliance(options: ConstructionComplianceOpti
   }
 
   /**
+   * Has the keyed flow-evidence step already completed durably? A flow
+   * replay converges on the DURABLE record (the workflow keyed-fast-path
+   * discipline): the evidence row's payload carries the flow key of the
+   * logical submission, so a replay re-observes it instead of attaching a
+   * clock-shifted duplicate (a re-attach with a new observedAt is a NEW
+   * logical submission by /evidence's own keyed-content discipline, not
+   * a replay).
+   */
+  async function flowEvidenceExists(
+    principal: Principal,
+    tenantId: string,
+    serviceWorkId: string,
+    requirement: string,
+    flowKey: string,
+  ): Promise<boolean> {
+    const rows = await evidence.listEvidence(principal, tenantId, { serviceWorkId, requirement });
+    return rows.some((row) => (row.payload as Record<string, unknown>).flowKey === flowKey);
+  }
+
+  /**
    * The durable attempt of one keyed logical effort: REUSED when it
    * already exists (a post-dispatch /work retry would create a NEW
    * superseding attempt — correct for real retries, wrong for a
@@ -727,26 +747,31 @@ export function createConstructionCompliance(options: ConstructionComplianceOpti
       );
 
       // 8. The profile evidence (the attributable engagement record).
-      await evidence.attachEvidence(principal, {
-        tenantId,
-        serviceWorkId: serviceWork.id,
-        workAttemptId: attempt.id,
-        requirement: 'construction.subcontractor_profile',
-        provenance: {
-          kind: 'external_record',
-          source: 'construction.onboarding',
-          refs: [subcontractor.id, project.id],
-        },
-        payload: {
-          subcontractorInstanceId: subcontractor.id,
-          projectInstanceId: project.id,
-          packageVersion,
-          subcontractor: { ...subcontractor.fields },
-          project: { id: project.id, name: project.fields.name },
-        },
-        observedAt: now(),
-        idempotencyKey: `${key}:profile-evidence`,
-      });
+      //    Replay-guarded: the durable row is the authority a retry
+      //    converges on.
+      if (!(await flowEvidenceExists(principal, tenantId, serviceWork.id, 'construction.subcontractor_profile', `${key}:profile-evidence`))) {
+        await evidence.attachEvidence(principal, {
+          tenantId,
+          serviceWorkId: serviceWork.id,
+          workAttemptId: attempt.id,
+          requirement: 'construction.subcontractor_profile',
+          provenance: {
+            kind: 'external_record',
+            source: 'construction.onboarding',
+            refs: [subcontractor.id, project.id],
+          },
+          payload: {
+            flowKey: `${key}:profile-evidence`,
+            subcontractorInstanceId: subcontractor.id,
+            projectInstanceId: project.id,
+            packageVersion,
+            subcontractor: { ...subcontractor.fields },
+            project: { id: project.id, name: project.fields.name },
+          },
+          observedAt: now(),
+          idempotencyKey: `${key}:profile-evidence`,
+        });
+      }
 
       // 9. Waiting for the vendor.
       await transition(principal, tenantId, serviceWork.id, 'waiting_information', `${key}:t-waiting-information`, 'compliance documents requested from the vendor');
@@ -870,24 +895,28 @@ export function createConstructionCompliance(options: ConstructionComplianceOpti
           asOf,
         );
         // The rule outcome is attributable evidence (always attached —
-        // a failure is a durable finding, never hidden).
-        await evidence.attachEvidence(principal, {
-          tenantId,
-          serviceWorkId,
-          requirement: 'construction.insurance_validation',
-          provenance: {
-            kind: 'calculation',
-            source: 'construction.compliance-flow',
-            refs: [insuranceEvidence.id],
-          },
-          payload: {
-            asOf: asOf.toISOString(),
-            compliant: insuranceValidation.compliant,
-            findings: insuranceValidation.findings,
-          },
-          observedAt: asOf,
-          idempotencyKey: `${key}:insurance-validation-evidence`,
-        });
+        // a failure is a durable finding, never hidden; replay-guarded by
+        // the flow key).
+        if (!(await flowEvidenceExists(principal, tenantId, serviceWorkId, 'construction.insurance_validation', `${key}:insurance-validation-evidence`))) {
+          await evidence.attachEvidence(principal, {
+            tenantId,
+            serviceWorkId,
+            requirement: 'construction.insurance_validation',
+            provenance: {
+              kind: 'calculation',
+              source: 'construction.compliance-flow',
+              refs: [insuranceEvidence.id],
+            },
+            payload: {
+              flowKey: `${key}:insurance-validation-evidence`,
+              asOf: asOf.toISOString(),
+              compliant: insuranceValidation.compliant,
+              findings: insuranceValidation.findings,
+            },
+            observedAt: asOf,
+            idempotencyKey: `${key}:insurance-validation-evidence`,
+          });
+        }
       }
 
       let licenseValidation: LicenseValidationResult | null = null;
@@ -902,23 +931,26 @@ export function createConstructionCompliance(options: ConstructionComplianceOpti
             { licenseNumber: facts.licenseNumber, jurisdiction: facts.jurisdiction, expiresAt: facts.expiresAt, active: facts.active },
             asOf,
           );
-          await evidence.attachEvidence(principal, {
-            tenantId,
-            serviceWorkId,
-            requirement: 'construction.license_validation',
-            provenance: {
-              kind: 'calculation',
-              source: 'construction.compliance-flow',
-              refs: [licenseEvidence.id],
-            },
-            payload: {
-              asOf: asOf.toISOString(),
-              compliant: licenseValidation.compliant,
-              findings: licenseValidation.findings,
-            },
-            observedAt: asOf,
-            idempotencyKey: `${key}:license-validation-evidence`,
-          });
+          if (!(await flowEvidenceExists(principal, tenantId, serviceWorkId, 'construction.license_validation', `${key}:license-validation-evidence`))) {
+            await evidence.attachEvidence(principal, {
+              tenantId,
+              serviceWorkId,
+              requirement: 'construction.license_validation',
+              provenance: {
+                kind: 'calculation',
+                source: 'construction.compliance-flow',
+                refs: [licenseEvidence.id],
+              },
+              payload: {
+                flowKey: `${key}:license-validation-evidence`,
+                asOf: asOf.toISOString(),
+                compliant: licenseValidation.compliant,
+                findings: licenseValidation.findings,
+              },
+              observedAt: asOf,
+              idempotencyKey: `${key}:license-validation-evidence`,
+            });
+          }
         }
       }
 
@@ -931,22 +963,25 @@ export function createConstructionCompliance(options: ConstructionComplianceOpti
             throw new ConstructionError('INVALID_INPUT', 'the W-9 evidence payload is malformed');
           }
           w9Validation = validateW9Compliance(entityString(engagement.subcontractor, 'taxId'), facts.taxId);
-          await evidence.attachEvidence(principal, {
-            tenantId,
-            serviceWorkId,
-            requirement: 'construction.w9',
-            provenance: {
-              kind: 'calculation',
-              source: 'construction.compliance-flow',
-              refs: [w9Evidence.id],
-            },
-            payload: {
-              compliant: w9Validation.compliant,
-              findings: w9Validation.findings,
-            },
-            observedAt: asOf,
-            idempotencyKey: `${key}:w9-validation-evidence`,
-          });
+          if (!(await flowEvidenceExists(principal, tenantId, serviceWorkId, 'construction.w9_validation', `${key}:w9-validation-evidence`))) {
+            await evidence.attachEvidence(principal, {
+              tenantId,
+              serviceWorkId,
+              requirement: 'construction.w9_validation',
+              provenance: {
+                kind: 'calculation',
+                source: 'construction.compliance-flow',
+                refs: [w9Evidence.id],
+              },
+              payload: {
+                flowKey: `${key}:w9-validation-evidence`,
+                compliant: w9Validation.compliant,
+                findings: w9Validation.findings,
+              },
+              observedAt: asOf,
+              idempotencyKey: `${key}:w9-validation-evidence`,
+            });
+          }
         }
       }
 
@@ -1367,7 +1402,7 @@ export function createConstructionCompliance(options: ConstructionComplianceOpti
           provenance: row.provenance,
         })),
         validations: documentRows
-          .filter((row) => row.requirement.endsWith('_validation') || row.requirement === 'construction.w9')
+          .filter((row) => row.requirement.endsWith('_validation'))
           .filter((row) => (row.payload as Record<string, unknown>).compliant !== undefined)
           .map((row) => ({ id: row.id, requirement: row.requirement, compliant: (row.payload as Record<string, unknown>).compliant })),
         verification: {
@@ -1386,20 +1421,30 @@ export function createConstructionCompliance(options: ConstructionComplianceOpti
       const packageDocument = { ...packageCore, packageHash };
 
       // 3. The package record as attributable evidence (the auditable
-      //    output — AC-7).
-      const { evidence: packageEvidence } = await evidence.attachEvidence(principal, {
-        tenantId,
-        serviceWorkId,
-        requirement: 'construction.compliance_package',
-        provenance: {
-          kind: 'system_observation',
-          source: 'construction.compliance-flow',
-          refs: [verification.id, serviceWorkId],
-        },
-        payload: { packageHash, verificationId: verification.id, verdict: verification.verdict },
-        observedAt: now(),
-        idempotencyKey: `${key}:package-evidence`,
-      });
+      //    output — AC-7; replay-guarded by the flow key).
+      let packageEvidence = null as Awaited<ReturnType<EvidenceAuthority['attachEvidence']>>['evidence'] | null;
+      if (!(await flowEvidenceExists(principal, tenantId, serviceWorkId, 'construction.compliance_package', `${key}:package-evidence`))) {
+        const attached = await evidence.attachEvidence(principal, {
+          tenantId,
+          serviceWorkId,
+          requirement: 'construction.compliance_package',
+          provenance: {
+            kind: 'system_observation',
+            source: 'construction.compliance-flow',
+            refs: [verification.id, serviceWorkId],
+          },
+          payload: { flowKey: `${key}:package-evidence`, packageHash, verificationId: verification.id, verdict: verification.verdict },
+          observedAt: now(),
+          idempotencyKey: `${key}:package-evidence`,
+        });
+        packageEvidence = attached.evidence;
+      } else {
+        const existing = await evidence.listEvidence(principal, tenantId, { serviceWorkId, requirement: 'construction.compliance_package' });
+        packageEvidence = existing.find((row) => (row.payload as Record<string, unknown>).flowKey === `${key}:package-evidence`) ?? null;
+      }
+      if (packageEvidence === null) {
+        throw new ConstructionError('PACKAGE_NOT_ASSEMBLABLE', 'the package evidence record must exist after assembly');
+      }
 
       return { packageDocument, packageHash, packageEvidence };
     },
@@ -1443,7 +1488,7 @@ async function allValidationEvidenceCompliant(
   evidence: EvidenceAuthority,
 ): Promise<boolean> {
   const rows = await evidence.listEvidence(principal, tenantId, { serviceWorkId });
-  const validationRequirements = ['construction.insurance_validation', 'construction.license_validation', 'construction.w9'];
+  const validationRequirements = ['construction.insurance_validation', 'construction.license_validation', 'construction.w9_validation'];
   for (const requirement of validationRequirements) {
     // The LATEST validation-bearing row of this requirement by the
     // record's business observation time (list-position tiebreak) — the

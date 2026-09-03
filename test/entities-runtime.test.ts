@@ -390,9 +390,9 @@ test('missing document: evaluation lists the gap, reworks, and the chase is gove
     assert.equal(chase.followUpWork.status, 'in_progress');
     assert.equal(chase.chase.state, 'dispatched');
     // The unsatisfied requirement set: the missing documents AND their
-    // missing deterministic validations (insurance + w9 + license +
-    // license_validation + insurance_validation).
-    assert.equal(chase.missing.length, 5);
+    // missing deterministic validations (insurance + w9 + license, each
+    // with its validation requirement).
+    assert.equal(chase.missing.length, 6);
     // The follow-up contact correlates to the compliance work.
     assert.equal(chase.chase.correlation.serviceWorkId, onboarding.serviceWork.id);
     // Re-invoking the SAME round converges on the SAME contact (AC-5
