@@ -45,7 +45,7 @@
 --     exists anywhere in this schema.
 
 CREATE TABLE IF NOT EXISTS entity_instances (
-  id uuid PRIMARY KEY,
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id uuid NOT NULL REFERENCES org_service_tenants(id),
   -- The vertical package whose declaration defined this entity type
   -- (read-only provenance through /verticals' public surface; the
