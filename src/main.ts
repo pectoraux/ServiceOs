@@ -37,6 +37,7 @@ import { createServicesModule } from './modules/services/index.js';
 import { createBillingModule } from './modules/billing/index.js';
 import { createEvidenceModule } from './modules/evidence/index.js';
 import { createApprovalsModule } from './modules/approvals/index.js';
+import { createEntitiesModule, createConstructionCompliance } from './modules/entities/index.js';
 
 import auth from './modules/auth/index.js';
 import organizations from './modules/organizations/index.js';
@@ -262,6 +263,34 @@ export async function main(): Promise<void> {
     policies: policiesModule,
   });
 
+  // Entity-instance authority + Construction vertical flow (/entities,
+  // WORK-010): the entity-instance store consumes the single
+  // authorization chain and /verticals' public package registry
+  // (declaration validation — never a second registry). The
+  // Construction Subcontractor Compliance flow is pure orchestration
+  // over the horizontal authorities' public interfaces (work,
+  // workflow, evidence, interactions, zeck, approvals): it owns no
+  // replacement engine and no durable state of its own — every flow
+  // fact lands in an authority's ledger, and final compliance is the
+  // composed ServiceOS business verification (evidence verdict AND
+  // deterministic vertical rules; a foreign AI execution claim alone
+  // can never mark compliance). No HTTP surface (WORK-012).
+  const entitiesModule = createEntitiesModule({
+    executor,
+    tenancy: organizationsModule,
+    verticals: verticalsModule,
+  });
+  const constructionCompliance = createConstructionCompliance({
+    entities: entitiesModule,
+    verticals: verticalsModule,
+    work: workModule,
+    workflow: workflowModule,
+    evidence: evidenceModule,
+    interactions: interactionsModule,
+    zeck: zeckModule,
+    approvals: approvalsModule,
+  });
+
   const modules = registerModules(SERVICE_MODULES);
   const server = composeServer({
     modules,
@@ -302,6 +331,8 @@ export async function main(): Promise<void> {
     zeckBoundary: zeckModule !== null ? 'composed (closed: no gateway)' : 'missing',
     evidenceAuthority: evidenceModule !== null ? 'composed' : 'missing',
     registeredAdapterCapabilities: adapterRegistry.describe().length,
+    entityAuthority: entitiesModule !== null ? 'composed' : 'missing',
+    constructionComplianceFlow: constructionCompliance !== null ? 'composed (zeck boundary closed: no gateway)' : 'missing',
   });
 }
 

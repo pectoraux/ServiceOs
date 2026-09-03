@@ -275,8 +275,11 @@ test('the adapter surface imported outside /interactions is rejected (adapter-su
   }
 });
 
-test('the interaction surface imported outside /notifications is rejected (interaction-surface-outside-notifications)', () => {
-  for (const moduleName of ['workflow', 'verticals', 'services', 'entities', 'work', 'zeck']) {
+test('the interaction surface imported outside /notifications and /entities is rejected (interaction-surface-outside-notifications)', () => {
+  // WORK-010 extends the frontier: /entities (the construction compliance
+  // flow) is an authorized consumer of the interaction surface; every
+  // other module still fails closed.
+  for (const moduleName of ['workflow', 'verticals', 'services', 'work', 'zeck']) {
     const files = conformingTree();
     files[`src/modules/${moduleName}/index.ts`] = moduleFile(
       moduleName,

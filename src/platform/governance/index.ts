@@ -123,3 +123,13 @@ export {
   EVENT_SCHEMA_COLUMN_DENYLIST,
   type EventBoundaryCheckOptions,
 } from './events-boundary-checks.js';
+export {
+  checkEntitiesBoundaries,
+  RESERVED_ENTITIES_AUTHORITY_EXPORTS,
+  RESERVED_VERTICAL_ENGINE_EXPORTS,
+  RESERVED_AI_ENTITIES_EXPORTS,
+  ENTITIES_ALLOWED_IMPORTS,
+  ENTITIES_IMPORTERS,
+  ENTITIES_SCHEMA_COLUMN_DENYLIST,
+  type EntitiesBoundaryCheckOptions,
+} from './entities-boundary-checks.js';

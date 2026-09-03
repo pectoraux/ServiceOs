@@ -379,15 +379,25 @@ test('TRUE parallel inbox processing: ONE consumer invocation, ONE domain effect
       app.interactions.processInboxEvents(app.colleague, app.tenantId),
     ]);
     // One consumption; the loser converged (same durable result) or
-    // surfaced the typed in-progress state — never a duplicate effect.
+    // surfaced the typed in-progress state — never a duplicate effect
+    // (the surface contract: the loser's fulfilled outcome carries
+    // invoked=false with the durable in-progress/consumed state).
     const settledRecords = await app.interactions.listInboxEvents(app.owner, app.tenantId, { state: 'consumed' });
     assert.equal(settledRecords.length, 1);
+    let consumerInvocations = 0;
     for (const outcome of outcomes) {
       if (outcome.status === 'rejected') continue;
-      for (const result of outcome.value.outcomes) {
-        assert.equal((result as { event: InboxEventRecord }).event.state, 'consumed');
+      for (const result of outcome.value.outcomes as { event: InboxEventRecord; invoked: boolean }[]) {
+        if (result.event.state === 'consumed' && result.invoked) {
+          consumerInvocations += 1;
+        }
+        // The loser never invokes the consumer a second time; it either
+        // converged on the winner's durable result or surfaced the typed
+        // in-progress claim state (retryable later).
+        assert.equal(result.invoked === false || result.event.state === 'consumed', true);
       }
     }
+    assert.equal(consumerInvocations, 1);
     // The interaction was observed exactly once (one terminal row state).
     const observed = await app.interactions.getInteraction(app.owner, app.tenantId, interactionId);
     assert.equal(observed.state, 'observed');

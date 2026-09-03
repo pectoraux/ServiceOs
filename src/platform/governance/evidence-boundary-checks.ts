@@ -97,7 +97,10 @@ export const RESERVED_AI_EVIDENCE_EXPORTS: readonly string[] = [
 export const EVIDENCE_ALLOWED_IMPORTS: readonly string[] = ['auth', 'organizations', 'work'];
 
 /** Modules allowed to import /evidence (frontier-relative: none yet). */
-export const EVIDENCE_IMPORTERS: readonly string[] = [];
+// WORK-010 extends the frontier: /entities (the construction
+// compliance flow) attaches evidence and records verification through
+// /evidence's public interface.
+export const EVIDENCE_IMPORTERS: readonly string[] = ['entities'];
 
 /**
  * Columns the `evidence_` tables may never declare: the ledgers are

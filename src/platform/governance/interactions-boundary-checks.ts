@@ -203,7 +203,10 @@ export const PROVIDER_SDK_PACKAGE_PREFIXES: readonly string[] = [
 export const INTEGRATIONS_IMPORTERS: readonly string[] = ['interactions'];
 
 /** Modules allowed to import /interactions: the notification authority only (frontier-relative; WORK-006/010/012 extend through their own scopes). */
-export const INTERACTIONS_IMPORTERS: readonly string[] = ['notifications'];
+// WORK-010 extends the frontier: /entities (the construction
+// compliance flow) creates/dispatches vendor document requests and
+// follow-ups through /interactions' public interface.
+export const INTERACTIONS_IMPORTERS: readonly string[] = ['notifications', 'entities'];
 
 /** Sibling modules /integrations may import (none: the contracts are business-agnostic). */
 export const INTEGRATIONS_ALLOWED_IMPORTS: readonly string[] = [];
