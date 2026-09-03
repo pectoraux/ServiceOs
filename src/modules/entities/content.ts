@@ -17,11 +17,14 @@
  *   read per write: the hash and the row pin the SAME instant).
  *   Recomputed on every read: an after-the-fact mutation of any
  *   stored field is DETECTED (typed `ENTITY_RECORD_TAMPERED`).
- * - COMPLIANCE PACKAGE HASH — sha256 over the canonical assembled
- *   compliance-package document (the deterministic assembly is
- *   reproducible: the same authority state assembles to the same
- *   hash; the hash is recorded in the package evidence so any later
- *   divergence of the underlying state is observable).
+ * - COMPLIANCE PACKAGE HASH — sha256 over the canonical DETERMINISTIC
+ *   package content (the assembled authority-ledger projection).
+ *   VOLATILE ASSEMBLY METADATA (the observation instant) is excluded
+ *   from the hashed core, so the same unchanged authority state
+ *   assembles to the SAME hash under a moving clock — repeated
+ *   assembly is identity-stable, and the hash is recorded in the
+ *   package evidence so any later divergence of the underlying state
+ *   is observable.
  */
 import { createHash } from 'node:crypto';
 import type { EntityInstanceRecord } from './store.js';

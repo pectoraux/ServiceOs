@@ -6,11 +6,16 @@
  * - the entity authority: package-validated creation, declared-type
  *   discipline, keyed convergence (and divergent fail-closed), tenant
  *   isolation, tamper detection, missing-package/type distinction;
+ * - UNKEYED instances (idempotencyKey omitted) persist and read back
+ *   with a null key (the nullable-key contract regression);
  * - the Construction vertical package registers through /verticals'
  *   public surface (declaration validation end to end);
  * - HAPPY PATH: onboarding -> document collection -> deterministic
  *   validation -> verification -> completed + the auditable
- *   compliance package (AC-1..AC-7);
+ *   compliance package (AC-1..AC-7) — and PACKAGE HASH DETERMINISM
+ *   UNDER A MOVING CLOCK: re-assembly over unchanged authority state
+ *   converges on the identical hash/evidence/content (the
+ *   volatile-metadata exclusion regression);
  * - MISSING DOCUMENT: evaluation without documents lists the missing
  *   requirements and reworks; governed chase follow-up work + ONE
  *   durable vendor contact (AC-4/AC-5);
@@ -230,6 +235,80 @@ test('entity instances converge by key, reject divergent content, normalize date
   });
 });
 
+test('an UNKEYED entity instance (idempotencyKey omitted) persists and reads back intact (nullable-key contract regression)', async () => {
+  await withTenant(async (t) => {
+    // The Architect gate defect: the public contract permits an
+    // omitted/NULL idempotencyKey and the schema permits a NULL row
+    // key, but the SQL row mapper rejected NULL as malformed — a
+    // valid unkeyed entity could be persisted and then fail on
+    // read/mapping. This proof pins the module-level contract: an
+    // unkeyed submission creates, reads and lists cleanly with a null
+    // key and intact hashes (the live-PostgreSQL twin covers the SQL
+    // mapper path directly).
+    const fields = {
+      name: 'Unkeyed Vendor',
+      contactEmail: 'vendor@unkeyed.com',
+      taxId: '12-3456789',
+      trade: 'electrical',
+    };
+    const created = await t.app.entities.createEntityInstance(t.owner, {
+      tenantId: t.tenantId,
+      packageId: 'construction',
+      packageVersion: 1,
+      entityType: 'Subcontractor',
+      fields,
+      // idempotencyKey deliberately omitted.
+    });
+    assert.equal(created.converged, false);
+    assert.equal(created.instance.idempotencyKey, null);
+    // Read back: identity, null key and both hashes intact.
+    const read = await t.app.entities.getEntityInstance(t.owner, t.tenantId, created.instance.id);
+    assert.equal(read.id, created.instance.id);
+    assert.equal(read.idempotencyKey, null);
+    assert.equal(read.contentHash, created.instance.contentHash);
+    assert.equal(read.recordHash, created.instance.recordHash);
+    assert.deepEqual(read.fields, created.instance.fields);
+    // List: the unkeyed row maps with its null key.
+    const listed = await t.app.entities.listEntityInstances(t.owner, t.tenantId, { entityType: 'Subcontractor' });
+    const row = listed.find((instance) => instance.id === created.instance.id);
+    assert.ok(row !== undefined);
+    assert.equal(row.idempotencyKey, null);
+    // An unkeyed submission carries no convergence identity: the same
+    // content submitted again unkeyed is a DISTINCT logical instance.
+    const second = await t.app.entities.createEntityInstance(t.owner, {
+      tenantId: t.tenantId,
+      packageId: 'construction',
+      packageVersion: 1,
+      entityType: 'Subcontractor',
+      fields,
+    });
+    assert.equal(second.converged, false);
+    assert.notEqual(second.instance.id, created.instance.id);
+    assert.equal(second.instance.idempotencyKey, null);
+    // A keyed submission of the same content coexists (keyed and
+    // unkeyed identities never collide).
+    const keyed = await t.app.entities.createEntityInstance(t.owner, {
+      tenantId: t.tenantId,
+      packageId: 'construction',
+      packageVersion: 1,
+      entityType: 'Subcontractor',
+      fields,
+      idempotencyKey: 'unkeyed-neighbor-key',
+    });
+    assert.equal(keyed.converged, false);
+    const converges = await t.app.entities.createEntityInstance(t.owner, {
+      tenantId: t.tenantId,
+      packageId: 'construction',
+      packageVersion: 1,
+      entityType: 'Subcontractor',
+      fields,
+      idempotencyKey: 'unkeyed-neighbor-key',
+    });
+    assert.equal(converges.converged, true);
+    assert.equal(converges.instance.id, keyed.instance.id);
+  });
+});
+
 test('the Construction vertical package registers through /verticals and converges on re-registration', async () => {
   await withTenant(async (t) => {
     const pkg = await registerConstructionPackage(t.app, t.owner, t.tenantId);
@@ -358,6 +437,73 @@ test('happy path: onboarding through verified-compliant and the auditable packag
     });
     assert.equal(interactions.length, 1);
   });
+});
+
+test('package hash determinism under a MOVING clock: re-assembly over unchanged authority state converges (regression)', async () => {
+  // The Architect gate defect: the assembly instant rode INSIDE the
+  // hashed core, so re-assembling unchanged authority state under a
+  // real (advancing) clock produced a different package hash every
+  // time; the happy-path replay above could not see it because its
+  // composed clock stays frozen. This proof advances the clock on
+  // EVERY read and asserts the package identity converges anyway:
+  // identical hash, identical evidence record, identical
+  // deterministic content — the observation instant alone moves,
+  // outside the hashed core.
+  let tick = 0;
+  const base = new Date('2026-09-02T12:00:00.000Z').getTime();
+  const app = buildConstructionApp({ now: () => new Date(base + tick++ * 1000) });
+  const tenant = await prepareConstructionTenant(app);
+  const project = await createConstructionProject(app, tenant.owner, tenant.tenantId);
+  const onboarding = await app.construction.onboardSubcontractor(tenant.owner, {
+    tenantId: tenant.tenantId,
+    packageVersion: 1,
+    projectInstanceId: project.id,
+    subcontractor: { name: 'Acme Electrical', contactEmail: 'vendor@acme.com', taxId: '12-3456789', trade: 'electrical' },
+    idempotencyKey: 'onboard-moving-clock',
+  });
+  for (const [kind, document, key] of [
+    ['insurance_certificate', { ...COMPLIANT_INSURANCE }, 'doc-moving-ins'] as const,
+    ['w9', { taxId: '12-3456789' }, 'doc-moving-w9'] as const,
+    ['license', { licenseNumber: 'GC-90210', jurisdiction: 'CA', expiresAt: '2027-03-31T00:00:00.000Z', active: true }, 'doc-moving-lic'] as const,
+  ]) {
+    await app.construction.receiveVendorDocument(tenant.owner, {
+      tenantId: tenant.tenantId,
+      serviceWorkId: onboarding.serviceWork.id,
+      kind,
+      document,
+      receivedAt: new Date('2026-09-03T09:00:00.000Z'),
+      idempotencyKey: key,
+    });
+  }
+  const evaluation = await app.construction.evaluateCompliance(tenant.owner, {
+    tenantId: tenant.tenantId,
+    serviceWorkId: onboarding.serviceWork.id,
+    idempotencyKey: 'eval-moving-clock',
+  });
+  assert.equal(evaluation.compliant, true);
+  const first = await app.construction.assembleCompliancePackage(tenant.owner, {
+    tenantId: tenant.tenantId,
+    serviceWorkId: onboarding.serviceWork.id,
+    idempotencyKey: 'package-moving-clock',
+  });
+  // The clock keeps advancing between the assemblies; the authority
+  // ledger state does not change.
+  const second = await app.construction.assembleCompliancePackage(tenant.owner, {
+    tenantId: tenant.tenantId,
+    serviceWorkId: onboarding.serviceWork.id,
+    idempotencyKey: 'package-moving-clock',
+  });
+  assert.equal(second.packageHash, first.packageHash);
+  assert.equal(second.packageEvidence.id, first.packageEvidence.id);
+  const firstDoc = first.packageDocument as Record<string, unknown>;
+  const secondDoc = second.packageDocument as Record<string, unknown>;
+  // The clock genuinely moved between the two assemblies (the proof
+  // is not accidentally frozen like the happy-path clock).
+  assert.notEqual(secondDoc.assembledAt, firstDoc.assembledAt);
+  // The deterministic content is identical (volatile metadata excluded).
+  const { assembledAt: _firstAt, ...firstCore } = firstDoc;
+  const { assembledAt: _secondAt, ...secondCore } = secondDoc;
+  assert.deepEqual(secondCore, firstCore);
 });
 
 // ---------------------------------------------------------------------------

@@ -14,6 +14,10 @@
  *   divergent same-key fail-closed, tamper detection on read (real rows
  *   mutated out of band), and mandatory tenant predicates (a foreign
  *   tenant's row is indistinguishable from a missing one);
+ * - UNKEYED instances (idempotencyKey omitted) persist, read and list
+ *   over real SQL with a NULL row key (the nullable-key contract
+ *   regression: the mapper previously rejected the valid NULL key as
+ *   tampering);
  * - the Construction compliance flow end-to-end over real SQL: onboarding
  *   (entities + work + attempt + transitions + the durable collection
  *   contact), document receipt (entity + evidence + resume), the
@@ -21,7 +25,9 @@
  *   verification decision + the completed transition), the governed
  *   chase follow-up (chase work + ONE keyed contact), and the auditable
  *   compliance package (deterministic hash over the assembled authority
- *   state);
+ *   state — re-assembly over unchanged state converges under the
+ *   ADVANCING test clock: volatile assembly metadata is excluded from
+ *   the hashed core);
  * - duplicate document callbacks converge over real rows: parallel
  *   same-key receipts converge on ONE entity + ONE evidence row;
  * - concurrent follow-up workers do not double-contact the vendor: the
@@ -373,6 +379,79 @@ test('the entity flow works over real SQL: validation, convergence, tamper detec
 // The Construction compliance flow end-to-end over real SQL
 // ---------------------------------------------------------------------------
 
+test('UNKEYED entity instances persist and read back over real SQL (nullable idempotency key regression)', { skip: SKIP }, async () => {
+  await withLive(async (app) => {
+    // The Architect gate defect: the SQL row mapper rejected the NULL
+    // idempotency_key as malformed, so a valid unkeyed entity was
+    // persisted and then FAILED on read/mapping. This live proof pins
+    // the nullable contract end-to-end over real rows: unkeyed create,
+    // read-by-id, list — with the raw row verified NULL-keyed.
+    const fields = {
+      name: 'Unkeyed Vendor',
+      contactEmail: 'vendor@unkeyed.com',
+      taxId: '12-3456789',
+      trade: 'electrical',
+    };
+    const created = await app.entities.createEntityInstance(app.owner, {
+      tenantId: app.tenantId,
+      packageId: 'construction',
+      packageVersion: 1,
+      entityType: 'Subcontractor',
+      fields,
+      // idempotencyKey deliberately omitted.
+    });
+    assert.equal(created.converged, false);
+    assert.equal(created.instance.idempotencyKey, null);
+    // The raw row is genuinely NULL-keyed (the schema permits it).
+    const raw = await app.pool.query(`SELECT idempotency_key FROM entity_instances WHERE id = $1`, [
+      created.instance.id,
+    ]);
+    assert.equal((raw.rows[0] as { idempotency_key: string | null }).idempotency_key, null);
+    // Read-by-id maps the unkeyed row intact (the previously broken path).
+    const read = await app.entities.getEntityInstance(app.owner, app.tenantId, created.instance.id);
+    assert.equal(read.id, created.instance.id);
+    assert.equal(read.idempotencyKey, null);
+    assert.equal(read.contentHash, created.instance.contentHash);
+    assert.equal(read.recordHash, created.instance.recordHash);
+    assert.deepEqual(read.fields, created.instance.fields);
+    // List maps the unkeyed row with its null key too.
+    const listed = await app.entities.listEntityInstances(app.owner, app.tenantId, { entityType: 'Subcontractor' });
+    const row = listed.find((instance) => instance.id === created.instance.id);
+    assert.ok(row !== undefined);
+    assert.equal(row.idempotencyKey, null);
+    // Unkeyed submissions carry no convergence identity: the same
+    // content again is a DISTINCT durable row.
+    const second = await app.entities.createEntityInstance(app.owner, {
+      tenantId: app.tenantId,
+      packageId: 'construction',
+      packageVersion: 1,
+      entityType: 'Subcontractor',
+      fields,
+    });
+    assert.equal(second.converged, false);
+    assert.notEqual(second.instance.id, created.instance.id);
+    // Keyed convergence beside unkeyed rows is unaffected.
+    const keyed = await app.entities.createEntityInstance(app.owner, {
+      tenantId: app.tenantId,
+      packageId: 'construction',
+      packageVersion: 1,
+      entityType: 'Subcontractor',
+      fields,
+      idempotencyKey: 'unkeyed-neighbor-key',
+    });
+    const converges = await app.entities.createEntityInstance(app.owner, {
+      tenantId: app.tenantId,
+      packageId: 'construction',
+      packageVersion: 1,
+      entityType: 'Subcontractor',
+      fields,
+      idempotencyKey: 'unkeyed-neighbor-key',
+    });
+    assert.equal(converges.converged, true);
+    assert.equal(converges.instance.id, keyed.instance.id);
+  });
+});
+
 test('the full construction compliance journey over real SQL: onboarding -> documents -> verification -> package', { skip: SKIP }, async () => {
   await withLive(async (app) => {
     const onboarding = await onboard(app, 'live-onboard-1');
@@ -409,6 +488,25 @@ test('the full construction compliance journey over real SQL: onboarding -> docu
     });
     assert.equal(pack.packageHash.length, 64);
     assert.equal((pack.packageDocument as Record<string, unknown>).workState, 'completed');
+    // Regression (Architect gate): the package hash is DETERMINISTIC —
+    // volatile assembly metadata is excluded from the hashed core, so
+    // re-assembling over UNCHANGED authority state under this file's
+    // ADVANCING clock converges on the identical hash, evidence
+    // identity and deterministic content (the observation instant
+    // alone moves).
+    const again = await app.construction.assembleCompliancePackage(app.owner, {
+      tenantId: app.tenantId,
+      serviceWorkId: onboarding.serviceWork.id,
+      idempotencyKey: 'live-package-1',
+    });
+    assert.equal(again.packageHash, pack.packageHash);
+    assert.equal(again.packageEvidence.id, pack.packageEvidence.id);
+    const firstDoc = pack.packageDocument as Record<string, unknown>;
+    const secondDoc = again.packageDocument as Record<string, unknown>;
+    assert.notEqual(secondDoc.assembledAt, firstDoc.assembledAt); // the advancing clock genuinely moved
+    const { assembledAt: _firstAt, ...firstCore } = firstDoc;
+    const { assembledAt: _secondAt, ...secondCore } = secondDoc;
+    assert.deepEqual(secondCore, firstCore);
     // Replay convergence over real SQL: the same onboarding key converges.
     const replay = await app.construction.onboardSubcontractor(app.owner, {
       tenantId: app.tenantId,

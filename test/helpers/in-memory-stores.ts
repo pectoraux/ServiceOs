@@ -4737,7 +4737,6 @@ import {
   type ConstructionComplianceFlow,
 } from '../../src/modules/entities/index.js';
 export interface InMemoryEntitiesStoreOptions {
-  now?: () => Date;
   /** Race-injection points before the synchronous critical sections. */
   beforeCreateInstance?: () => Promise<void>;
 }
@@ -4751,7 +4750,10 @@ type MutableEntityInstance = Mutable<EntityInstanceRecord>;
  * advisory-locked SQL transactions — the async race hooks inject
  * interleaving points BEFORE each section), keyed convergence with
  * content comparison (divergence fails closed), immutable append-only
- * instances, hash verification on reads (mutable records so tests can
+ * instances, the row instant PINNED to the caller's single clock read
+ * (`input.now` — the same one-read discipline as the SQL store's
+ * `$10, $10` insert: the hash and the row never diverge under a moving
+ * clock), hash verification on reads (mutable records so tests can
  * tamper deliberately and prove detection) and the same typed
  * rule/missing errors as the SQL store.
  */
@@ -4761,11 +4763,9 @@ export class InMemoryEntitiesStore implements EntitiesStore {
   readonly reads = { instanceById: 0, instanceByKey: 0, instancesList: 0 };
   /** Race-injection hooks (public so concurrency tests can swap them). */
   readonly options: InMemoryEntitiesStoreOptions;
-  private readonly now: () => Date;
 
   constructor(options: InMemoryEntitiesStoreOptions = {}) {
     this.options = options;
-    this.now = options.now ?? (() => new Date());
   }
 
   private verifyInstance(record: MutableEntityInstance): EntityInstanceRecord {
@@ -4823,7 +4823,12 @@ export class InMemoryEntitiesStore implements EntitiesStore {
       }
     }
     const id = randomUUID();
-    const createdAt = this.now();
+    // ONE clock read, the caller's: the row pins input.now exactly as
+    // the SQL store does ($10, $10) — the module computed recordHash
+    // with this same instant, and a moving clock must never diverge
+    // the hash from the row (the moving-clock regression proof pins
+    // this discipline).
+    const createdAt = input.now;
     const record: MutableEntityInstance = {
       id,
       tenantId: input.tenantId,
@@ -4956,7 +4961,7 @@ export function buildConstructionApp(
     policies,
     now: clock,
   });
-  const entitiesStore = new InMemoryEntitiesStore({ now: clock, ...options.entitiesStoreOptions });
+  const entitiesStore = new InMemoryEntitiesStore(options.entitiesStoreOptions);
   const entities = createEntitiesModule({ store: entitiesStore, tenancy: identity.organizations, verticals, now: clock });
   const construction = createConstructionCompliance({
     entities,

@@ -26,6 +26,15 @@
  * 5. RECORD INTEGRITY: every read re-validates shapes defensively and
  *    recomputes BOTH persisted hashes; divergence fails closed
  *    (`entity-record-tampered`).
+ *
+ * 6. NULLABLE IDEMPOTENCY KEYS: the public contract permits an
+ *    UNKEYED submission (idempotencyKey omitted/NULL) and migration
+ *    0012 permits a NULL row key (the partial unique identity index
+ *    covers keyed rows only — unkeyed rows carry no convergence
+ *    identity, so every unkeyed submission is a distinct logical
+ *    instance). The row mapper therefore maps NULL to the record's
+ *    null key exactly as the write path pinned it; a non-string,
+ *    non-NULL key remains tampering.
  */
 import type { TransactionalExecutor } from '../../platform/persistence/index.js';
 import { computeEntityInstanceContentHash, computeEntityInstanceRecordHash } from './content.js';
@@ -49,7 +58,8 @@ interface EntityInstanceRow {
   package_version: number;
   entity_type: string;
   fields: unknown;
-  idempotency_key: string;
+  /** NULL for unkeyed instances (the nullable contract; keyed rows only are unique). */
+  idempotency_key: string | null;
   content_hash: string;
   record_hash: string;
   created_by: string;
@@ -88,8 +98,14 @@ function mapInstance(row: EntityInstanceRow): EntityInstanceRecord {
   if (typeof row.package_version !== 'number' || !Number.isInteger(row.package_version) || row.package_version < 1) {
     failTampered('instance row package_version is malformed');
   }
-  if (typeof row.entity_type !== 'string' || typeof row.idempotency_key !== 'string') {
-    failTampered('instance row entity_type/idempotency_key is malformed');
+  if (typeof row.entity_type !== 'string') {
+    failTampered('instance row entity_type is malformed');
+  }
+  // The nullable-key contract: NULL maps to the record's null key
+  // (the write path hashed and stored exactly that); a non-string
+  // non-NULL value is tampering.
+  if (row.idempotency_key !== null && typeof row.idempotency_key !== 'string') {
+    failTampered('instance row idempotency_key is malformed');
   }
   const fields = mapFieldValues(row.fields);
   const createdAt = toDate(row.created_at);

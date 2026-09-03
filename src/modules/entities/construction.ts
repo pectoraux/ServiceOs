@@ -1369,7 +1369,11 @@ export function createConstructionCompliance(options: ConstructionComplianceOpti
       }
 
       // 2. The auditable assembly — every section cited from an
-      //    authority ledger (nothing is re-decided here).
+      //    authority ledger (nothing is re-decided here). The hashed
+      //    core is the DETERMINISTIC PROJECTION of that ledger state:
+      //    volatile assembly metadata (the observation instant) is
+      //    deliberately excluded so the same unchanged authority state
+      //    assembles to the SAME hash under a moving clock.
       const evidenceRows = await evidence.listEvidence(principal, tenantId, { serviceWorkId });
       const decisions = await evidence.listOutcomeVerifications(principal, tenantId, { serviceWorkId, outcomeId: CONSTRUCTION_COMPLIANCE_OUTCOME_ID });
       const transitions = await workflow.listTransitions(principal, tenantId, serviceWorkId);
@@ -1415,10 +1419,15 @@ export function createConstructionCompliance(options: ConstructionComplianceOpti
         transitions: transitions.map((row) => ({ id: row.id, from: row.fromState, to: row.toState, ruleId: row.ruleId, at: row.createdAt.toISOString() })),
         interactions: interactionRows.map((row) => ({ id: row.id, capability: row.capability, state: row.state, outcome: row.observation?.outcome ?? null })),
         zeckIntents: intents.map((row) => ({ id: row.id, zeckExecutionId: row.zeckExecutionId, lastSeenEventId: row.lastSeenEventId })),
-        assembledAt: now().toISOString(),
       };
+      // The hash covers the deterministic core ONLY. The observation
+      // instant is retained on the returned document OUTSIDE the hashed
+      // content (when this assembly ran), never inside it: a moving
+      // clock must not change the package identity — re-assembling
+      // unchanged authority state converges on the identical hash and
+      // evidence record (the moving-clock regression proof pins this).
       const packageHash = computeCompliancePackageHash(packageCore);
-      const packageDocument = { ...packageCore, packageHash };
+      const packageDocument = { ...packageCore, assembledAt: now().toISOString(), packageHash };
 
       // 3. The package record as attributable evidence (the auditable
       //    output — AC-7; replay-guarded by the flow key).
