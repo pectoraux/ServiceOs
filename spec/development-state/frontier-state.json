@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "currentMain": "0ef7148900572be30fc88af590e16633911aec61",
-  "currentLiveImplementation": "WORK-010",
-  "plannedNext": [],
+  "currentMain": "dc5be9aa676eb4a92264b64f3428abfa5231ce44",
+  "currentLiveImplementation": null,
+  "plannedNext": ["WORK-012"],
   "plannedFuture": ["WORK-012","WORK-013"],
-  "inFlight": ["WORK-010"],
+  "inFlight": [],
   "knownConflicts": [],
-  "rule": "Architect activation is required before a planned Work Order becomes in-flight. While a Work Order is in-flight, plannedNext is empty and the Architect must inspect that Work Order before authorizing another."
+  "rule": "Architect activation is required before a planned Work Order becomes in-flight. While a Work Order is in-flight, plannedNext is empty and the Architect must inspect that Work Order before authorizing another. A finalized era legitimately has zero in-flight Work Orders."
 }
