@@ -269,7 +269,9 @@ test('another module importing /approvals at this frontier is rejected', () => {
   const violations = runApprovalsCheck(files);
   assert.equal(violations.length, 1);
   assert.equal(violations[0]?.code, 'approvals-importer-frontier');
-  assert.deepEqual(APPROVALS_IMPORTERS, []);
+  // WORK-010 extends the frontier: /entities (the construction flow)
+  // consumes the approval surface.
+  assert.deepEqual(APPROVALS_IMPORTERS, ['entities']);
 });
 
 test('an AI/agent approver export in /approvals is rejected (AI or agent output is never approval)', () => {

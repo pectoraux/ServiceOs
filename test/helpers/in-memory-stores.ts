@@ -4716,3 +4716,359 @@ export function buildApprovalsApp(
     approvals,
   };
 }
+
+// ---------------------------------------------------------------------------
+// In-memory /entities store + the composed Construction app (WORK-010)
+// ---------------------------------------------------------------------------
+
+import {
+  createEntitiesModule,
+  createConstructionCompliance,
+  constructionVerticalPackage,
+  EntitiesStoreRuleError,
+  computeEntityInstanceContentHash,
+  computeEntityInstanceRecordHash,
+  type EntitiesModule,
+  type EntitiesStore,
+  type EntityInstanceFilter,
+  type EntityInstanceRecord,
+  type EntityFieldValue,
+  type CreateEntityInstanceStoreInput,
+  type ConstructionComplianceFlow,
+} from '../../src/modules/entities/index.js';
+export interface InMemoryEntitiesStoreOptions {
+  now?: () => Date;
+  /** Race-injection points before the synchronous critical sections. */
+  beforeCreateInstance?: () => Promise<void>;
+}
+
+type MutableEntityInstance = Mutable<EntityInstanceRecord>;
+
+/**
+ * Faithful in-memory implementation of the /entities store port (NOT a
+ * second persistence authority): tenant predicates, one SYNCHRONOUS
+ * critical section per store operation (the exact semantics of the
+ * advisory-locked SQL transactions — the async race hooks inject
+ * interleaving points BEFORE each section), keyed convergence with
+ * content comparison (divergence fails closed), immutable append-only
+ * instances, hash verification on reads (mutable records so tests can
+ * tamper deliberately and prove detection) and the same typed
+ * rule/missing errors as the SQL store.
+ */
+export class InMemoryEntitiesStore implements EntitiesStore {
+  readonly instances = new Map<string, MutableEntityInstance>();
+  readonly instancesByKey = new Map<string, string>();
+  readonly reads = { instanceById: 0, instanceByKey: 0, instancesList: 0 };
+  /** Race-injection hooks (public so concurrency tests can swap them). */
+  readonly options: InMemoryEntitiesStoreOptions;
+  private readonly now: () => Date;
+
+  constructor(options: InMemoryEntitiesStoreOptions = {}) {
+    this.options = options;
+    this.now = options.now ?? (() => new Date());
+  }
+
+  private verifyInstance(record: MutableEntityInstance): EntityInstanceRecord {
+    if (
+      computeEntityInstanceContentHash({
+        tenantId: record.tenantId,
+        packageId: record.packageId,
+        packageVersion: record.packageVersion,
+        entityType: record.entityType,
+        fields: record.fields,
+      }) !== record.contentHash
+    ) {
+      throw new EntitiesStoreRuleError(
+        `entity instance ${record.id} content no longer matches its recorded content hash`,
+        'entity-record-tampered',
+      );
+    }
+    if (
+      computeEntityInstanceRecordHash({
+        tenantId: record.tenantId,
+        packageId: record.packageId,
+        packageVersion: record.packageVersion,
+        entityType: record.entityType,
+        fields: record.fields,
+        contentHash: record.contentHash,
+        createdBy: record.createdBy,
+        idempotencyKey: record.idempotencyKey,
+        createdAt: record.createdAt,
+      }) !== record.recordHash
+    ) {
+      throw new EntitiesStoreRuleError(
+        `entity instance ${record.id} record no longer matches its recorded integrity hash`,
+        'entity-record-tampered',
+      );
+    }
+    return { ...record };
+  }
+
+  async createEntityInstance(input: CreateEntityInstanceStoreInput): Promise<{ instance: EntityInstanceRecord; converged: boolean }> {
+    if (this.options.beforeCreateInstance !== undefined) {
+      await this.options.beforeCreateInstance();
+    }
+    if (input.idempotencyKey !== null) {
+      const existingId = this.instancesByKey.get(`${input.tenantId}:${input.idempotencyKey}`);
+      if (existingId !== undefined) {
+        const existing = this.instances.get(existingId);
+        if (existing === undefined) throw new Error('corrupt key index');
+        if (existing.contentHash !== input.contentHash) {
+          throw new EntitiesStoreRuleError(
+            `entity instance idempotency key "${input.idempotencyKey}" already holds a different entity content; the same logical submission must carry the same content`,
+            'entity-input-conflict',
+          );
+        }
+        return { instance: this.verifyInstance(existing), converged: true };
+      }
+    }
+    const id = randomUUID();
+    const createdAt = this.now();
+    const record: MutableEntityInstance = {
+      id,
+      tenantId: input.tenantId,
+      packageId: input.packageId,
+      packageVersion: input.packageVersion,
+      entityType: input.entityType,
+      fields: { ...input.fields },
+      contentHash: input.contentHash,
+      recordHash: input.recordHash,
+      createdBy: input.createdBy,
+      idempotencyKey: input.idempotencyKey,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    this.instances.set(id, record);
+    if (input.idempotencyKey !== null) {
+      this.instancesByKey.set(`${input.tenantId}:${input.idempotencyKey}`, id);
+    }
+    return { instance: this.verifyInstance(record), converged: false };
+  }
+
+  async findEntityInstanceById(tenantId: string, instanceId: string): Promise<EntityInstanceRecord | null> {
+    this.reads.instanceById += 1;
+    const record = this.instances.get(instanceId);
+    if (record === undefined || record.tenantId !== tenantId) return null;
+    return this.verifyInstance(record);
+  }
+
+  async findEntityInstanceByIdempotencyKey(tenantId: string, idempotencyKey: string): Promise<EntityInstanceRecord | null> {
+    this.reads.instanceByKey += 1;
+    const id = this.instancesByKey.get(`${tenantId}:${idempotencyKey}`);
+    if (id === undefined) return null;
+    const record = this.instances.get(id);
+    if (record === undefined) return null;
+    return this.verifyInstance(record);
+  }
+
+  async listEntityInstances(tenantId: string, filter?: EntityInstanceFilter): Promise<EntityInstanceRecord[]> {
+    this.reads.instancesList += 1;
+    const records = [...this.instances.values()]
+      .filter((record) => record.tenantId === tenantId)
+      .filter((record) => filter?.packageId === undefined || record.packageId === filter.packageId)
+      .filter((record) => filter?.packageVersion === undefined || record.packageVersion === filter.packageVersion)
+      .filter((record) => filter?.entityType === undefined || record.entityType === filter.entityType)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || (a.id < b.id ? -1 : 1));
+    return records.map((record) => this.verifyInstance(record));
+  }
+}
+
+/** The composed Construction compliance application (all in-memory seams). */
+export interface ConstructionApp {
+  readonly authStore: InMemoryAuthStore;
+  readonly orgStore: InMemoryOrganizationsStore;
+  readonly workStore: InMemoryWorkStore;
+  readonly policyStore: InMemoryPoliciesStore;
+  readonly workflowStore: import('../../src/modules/workflow/index.js').WorkflowStore;
+  readonly evidenceStore: InMemoryEvidenceStore;
+  readonly approvalStore: InMemoryApprovalStore;
+  readonly zeckStore: InMemoryZeckStore;
+  readonly interactionsStore: import('../../src/modules/interactions/index.js').InteractionsStore;
+  readonly eventsStore: import('../../src/modules/interactions/index.js').EventsStore;
+  readonly verticalsStore: VerticalsStore;
+  readonly entitiesStore: InMemoryEntitiesStore;
+  readonly auth: AuthModule;
+  readonly organizations: OrganizationsModule;
+  readonly work: WorkModule;
+  readonly policies: PoliciesModule;
+  readonly workflow: WorkflowModule;
+  readonly evidence: EvidenceModule;
+  readonly approvals: ApprovalsModule;
+  readonly zeck: ZeckModule;
+  readonly interactions: InteractionsModule;
+  readonly verticals: VerticalsModule;
+  readonly entities: EntitiesModule;
+  readonly construction: ConstructionComplianceFlow;
+  /** The moving clock handle wired into every module (bump it between steps). */
+  readonly now: { value: Date };
+}
+
+export function buildConstructionApp(
+  options: {
+    now?: () => Date;
+    gateway?: ZeckGateway;
+    entitiesStoreOptions?: InMemoryEntitiesStoreOptions;
+    workStoreOptions?: InMemoryWorkStoreOptions;
+    evidenceStoreOptions?: InMemoryEvidenceStoreOptions;
+  } = {},
+): ConstructionApp {
+  const now = { value: new Date('2026-09-02T10:00:00.000Z') };
+  const clock = options.now ?? (() => now.value);
+  const identity = buildIdentityApp({ now: clock });
+  const workStore = new InMemoryWorkStore({ now: clock, ...options.workStoreOptions });
+  const work = createWorkModule({ store: workStore, tenancy: identity.organizations, now: clock });
+  const policyStore = new InMemoryPoliciesStore({ now: clock });
+  const policies = createPoliciesModule({ store: policyStore, tenancy: identity.organizations, now: clock });
+  const workflowStore = new InMemoryWorkflowStore(workStore, { now: clock });
+  const workflow = createWorkflowModule({ store: workflowStore, tenancy: identity.organizations, policies, now: clock });
+  const { adapter: emailAdapter } = createInMemoryProviderAdapter('email');
+  const registry = createAdapterRegistry();
+  registry.register(emailAdapter);
+  registry.seal();
+  const effectSink = createEffectSink(registry);
+  const interactionsStore = new InMemoryInteractionsStore({ now: clock });
+  const eventsStore = new InMemoryEventsStore({ now: clock });
+  const interactions = createInteractionsModule({
+    store: interactionsStore,
+    eventsStore,
+    tenancy: identity.organizations,
+    policies,
+    sink: effectSink,
+    now: clock,
+  });
+  const verticalsStore = new InMemoryVerticalsStore({ now: clock });
+  const verticals = createVerticalsModule({ store: verticalsStore, tenancy: identity.organizations, now: clock });
+  const zeckStore = new InMemoryZeckStore({ now: clock });
+  const zeck = createZeckModule({
+    store: zeckStore,
+    tenancy: identity.organizations,
+    work,
+    ...(options.gateway !== undefined ? { gateway: options.gateway } : {}),
+    now: clock,
+  });
+  const evidenceStore = new InMemoryEvidenceStore({ now: clock, ...options.evidenceStoreOptions });
+  const evidence = createEvidenceModule({ store: evidenceStore, tenancy: identity.organizations, work, now: clock });
+  const approvalStore = new InMemoryApprovalStore({ now: clock });
+  const approvals = createApprovalsModule({
+    store: approvalStore,
+    tenancy: identity.organizations,
+    work,
+    policies,
+    now: clock,
+  });
+  const entitiesStore = new InMemoryEntitiesStore({ now: clock, ...options.entitiesStoreOptions });
+  const entities = createEntitiesModule({ store: entitiesStore, tenancy: identity.organizations, verticals, now: clock });
+  const construction = createConstructionCompliance({
+    entities,
+    verticals,
+    work,
+    workflow,
+    evidence,
+    interactions,
+    zeck,
+    approvals,
+    now: clock,
+  });
+  const app: ConstructionApp = {
+    authStore: identity.authStore,
+    orgStore: identity.orgStore,
+    workStore,
+    policyStore,
+    workflowStore,
+    evidenceStore,
+    approvalStore,
+    zeckStore,
+    interactionsStore,
+    eventsStore,
+    verticalsStore,
+    entitiesStore,
+    auth: identity.auth,
+    organizations: identity.organizations,
+    work,
+    policies,
+    workflow,
+    evidence,
+    approvals,
+    zeck,
+    interactions,
+    verticals,
+    entities,
+    construction,
+    now,
+  };
+  return app;
+}
+
+/**
+ * The standard Construction proof tenant: an owner, an outsider with a
+ * second tenant, the Construction v1 package registered, and an allow
+ * policy version bound to the exception-escalation policy key.
+ */
+export interface ConstructionTenant {
+  readonly app: ConstructionApp;
+  readonly owner: import('../../src/modules/auth/index.js').Principal;
+  readonly outsider: import('../../src/modules/auth/index.js').Principal;
+  readonly tenantId: string;
+  readonly otherTenantId: string;
+}
+
+export async function prepareConstructionTenant(app: ConstructionApp): Promise<ConstructionTenant> {
+  const owner = await app.auth.registerHuman({ email: 'owner@a.com', password: 'correct horse battery 7', displayName: 'Owner' });
+  const outsider = await app.auth.registerHuman({ email: 'owner@b.com', password: 'correct horse battery 7', displayName: 'Outsider' });
+  const created = await app.organizations.createOrganization(owner, { slug: 'alpha-org', displayName: 'Alpha' });
+  const other = await app.organizations.createOrganization(outsider, { slug: 'beta-org', displayName: 'Beta' });
+  await registerConstructionPackage(app, owner, created.tenant.id);
+  return { app, owner, outsider, tenantId: created.tenant.id, otherTenantId: other.tenant.id };
+}
+
+/** Register the Construction v1 vertical package in a tenant (the operator action). */
+export async function registerConstructionPackage(
+  app: ConstructionApp,
+  owner: import('../../src/modules/auth/index.js').Principal,
+  tenantId: string,
+  version = 1,
+): Promise<VerticalPackageRecord> {
+  const input = constructionVerticalPackage(tenantId);
+  const { pkg } = await app.verticals.registerVerticalPackage(owner, {
+    ...input,
+    version,
+    idempotencyKey: `construction-package:${version}`,
+  });
+  return pkg;
+}
+
+/** Create a standard Construction Project entity instance for proofs. */
+export async function createConstructionProject(
+  app: ConstructionApp,
+  owner: import('../../src/modules/auth/index.js').Principal,
+  tenantId: string,
+  overrides: Partial<Record<string, EntityFieldValue>> = {},
+): Promise<EntityInstanceRecord> {
+  const { instance } = await app.entities.createEntityInstance(owner, {
+    tenantId,
+    packageId: 'construction',
+    packageVersion: 1,
+    entityType: 'Project',
+    fields: {
+      name: 'Riverside Tower',
+      minGlPerOccurrenceUsd: 1_000_000,
+      minUmbrellaAggregateUsd: 2_000_000,
+      expiryLeadDays: 30,
+      projectNamedAdditionalInsured: true,
+      requireW9: true,
+      requireLicense: true,
+      ...overrides,
+    },
+    idempotencyKey: `project:${tenantId}:${overrides.name ?? 'riverside-tower'}`,
+  });
+  return instance;
+}
+
+/** A compliant insurance-certificate fact record for proofs. */
+export const COMPLIANT_INSURANCE = {
+  glPerOccurrenceUsd: 2_000_000,
+  umbrellaAggregateUsd: 4_000_000,
+  expiresAt: new Date('2027-06-30T00:00:00.000Z').toISOString(),
+  additionalInsured: 'Riverside Tower',
+  certificateHolder: 'Riverside Tower GC',
+} as const;

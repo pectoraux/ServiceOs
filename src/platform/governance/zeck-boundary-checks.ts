@@ -76,7 +76,10 @@ export const RESERVED_ZECK_AUTHORITY_EXPORTS: readonly string[] = [
 export const ZECK_ALLOWED_IMPORTS: readonly string[] = ['auth', 'organizations', 'work', 'verticals'];
 
 /** Modules allowed to import /zeck (frontier-relative: none yet). */
-export const ZECK_IMPORTERS: readonly string[] = [];
+// WORK-010 extends the frontier: /entities (the construction
+// compliance flow) consumes the Zeck intent surface for document
+// reasoning — the sole AI execution authority, public interface only.
+export const ZECK_IMPORTERS: readonly string[] = ['entities'];
 
 /**
  * Execution-lifecycle columns the `zeck_` tables may never declare:

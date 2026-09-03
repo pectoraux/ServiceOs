@@ -107,7 +107,10 @@ export const RESERVED_AI_APPROVAL_EXPORTS: readonly string[] = [
 export const APPROVALS_ALLOWED_IMPORTS: readonly string[] = ['auth', 'organizations', 'work', 'policies'];
 
 /** Modules allowed to import /approvals (frontier-relative: none yet). */
-export const APPROVALS_IMPORTERS: readonly string[] = [];
+// WORK-010 extends the frontier: /entities (the construction
+// compliance flow) requests exception approvals and consumes terminal
+// human decisions through /approvals' public interface.
+export const APPROVALS_IMPORTERS: readonly string[] = ['entities'];
 
 /**
  * Columns the `approval_` tables may never declare: a typed

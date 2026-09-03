@@ -236,7 +236,10 @@ test('another module importing /zeck at this frontier is rejected', () => {
   const violations = runZeckCheck(files);
   assert.equal(violations.length, 1);
   assert.equal(violations[0]?.code, 'zeck-importer-frontier');
-  assert.deepEqual(ZECK_IMPORTERS, []);
+  // WORK-010 extends the frontier: /entities (the construction flow)
+  // consumes the Zeck intent surface; the next consumers extend through
+  // their own Work Order scopes.
+  assert.deepEqual(ZECK_IMPORTERS, ['entities']);
 });
 
 test('a credential-shaped token in /zeck sources is rejected (AC-4: no credentials)', () => {

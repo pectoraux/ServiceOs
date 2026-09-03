@@ -32,6 +32,7 @@ import {
   checkEvidenceBoundaries,
   checkApprovalsBoundaries,
   checkEventBoundaries,
+  checkEntitiesBoundaries,
   readProgramState,
   currentLiveWorkOrder,
   GovernanceError,
@@ -83,6 +84,7 @@ function main(): void {
     ...checkEvidenceBoundaries({ srcRoot, migrationsDir: resolve(repoRoot, 'db/migrations') }),
     ...checkApprovalsBoundaries({ srcRoot, migrationsDir: resolve(repoRoot, 'db/migrations') }),
     ...checkEventBoundaries({ srcRoot, migrationsDir: resolve(repoRoot, 'db/migrations') }),
+    ...checkEntitiesBoundaries({ srcRoot, migrationsDir: resolve(repoRoot, 'db/migrations') }),
   ];
   if (violations.length > 0) {
     for (const violation of violations) {
@@ -116,16 +118,19 @@ function main(): void {
     `billing: single customer-economics authority, no provider-level AI usage/cost authority anywhere, no Zeck import in /billing, billing binds the catalog and meters real work, cost references stay opaque (no violations)`,
   );
   console.log(
-    `zeck: single AI execution integration boundary, one provider-neutral port, reference-shaped durable surface with no lifecycle or credential columns, no module consumes the boundary yet (no violations)`,
+    `zeck: single AI execution integration boundary, one provider-neutral port, reference-shaped durable surface with no lifecycle or credential columns, consumed by /entities (construction document reasoning) through the public intent surface (no violations)`,
   );
   console.log(
-    `evidence: single business evidence and outcome-verification authority, immutable attributable ledgers, no AI evaluator surface, no parallel AI execution evidence store, no module consumes the authority yet (no violations)`,
+    `evidence: single business evidence and outcome-verification authority, immutable attributable ledgers, no AI evaluator surface, no parallel AI execution evidence store, consumed by /entities (construction compliance verification) through the public interface (no violations)`,
   );
   console.log(
-    `approvals: single business/human approval authority, explicit human decisions only (no AI/agent approval surface), one terminal decision per request, no Zeck-escalation replacement, no module consumes the authority yet (no violations)`,
+    `approvals: single business/human approval authority, explicit human decisions only (no AI/agent approval surface), one terminal decision per request, no Zeck-escalation replacement, consumed by /entities (construction exception escalation) through the public interface (no violations)`,
   );
   console.log(
     `events: single durable event inbox/outbox authority inside /interactions, frozen horizontal event vocabularies, no AI/credential columns in the event tables, no direct provider/delivery surface outside the authority (no violations)`,
+  );
+  console.log(
+    `entities: single entity-instance authority and construction compliance flow composing horizontal authorities and Zeck through public contracts; no replacement engines, no AI selection, no vertical durable state (no violations)`,
   );
 
   // 3. Canonical governance state: frontier + Work Order identity (AC-4).

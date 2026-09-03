@@ -273,7 +273,9 @@ test('another module importing /evidence at this frontier is rejected', () => {
   const violations = runEvidenceCheck(files);
   assert.equal(violations.length, 1);
   assert.equal(violations[0]?.code, 'evidence-importer-frontier');
-  assert.deepEqual(EVIDENCE_IMPORTERS, []);
+  // WORK-010 extends the frontier: /entities (the construction flow)
+  // consumes the evidence/verification surface.
+  assert.deepEqual(EVIDENCE_IMPORTERS, ['entities']);
 });
 
 test('an AI-evaluator export in /evidence is rejected (no AI model evaluator)', () => {

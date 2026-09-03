@@ -128,7 +128,10 @@ export const SERVICES_ALLOWED_IMPORTS: readonly string[] = ['auth', 'organizatio
 // capability-requirement declaration contract through /verticals'
 // public interface (the AI Execution Intent's requiredCapabilities are
 // validated by the SAME authority — never re-implemented).
-export const VERTICALS_IMPORTERS: readonly string[] = ['services', 'zeck'];
+// WORK-010 extends the frontier: /entities consumes the package registry
+// through /verticals' public read (entity-instance declaration
+// consultation + the flow's capability-requirement consumption).
+export const VERTICALS_IMPORTERS: readonly string[] = ['services', 'zeck', 'entities'];
 
 /** Modules allowed to import /services (frontier-relative). */
 export const SERVICES_IMPORTERS: readonly string[] = ['billing'];

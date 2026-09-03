@@ -125,6 +125,12 @@ export const ALLOWED_MIGRATION_TABLE_PREFIXES: readonly string[] = [
   // decision ledger — no AI/agent decider surface, no credentials,
   // checked by checkApprovalsBoundaries).
   'approval_',
+  // WORK-010 owns the /entities tables (migration 0012: the immutable
+  // tenant-bound entity-instance store — no lifecycle, no policy,
+  // no provider, no typed foreign-AI-execution columns; the
+  // construction flow owns no durable state, checked by
+  // checkEntitiesBoundaries).
+  'entity_',
 ];
 
 const MODULE_WORK = 'work';
